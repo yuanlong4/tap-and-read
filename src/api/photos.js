@@ -1,6 +1,6 @@
 // PUT /api/photos/<bookId>/<page> (JPEG body)  -> stores a page photo
 // GET /api/photos/<bookId>/<page>               -> returns it
-import { json, error, validId, bucket } from '../../../_lib.js';
+import { json, error, validId, bucket } from '../_lib.js';
 
 const keyFor = (params) => {
   const book = String(params.book || ''), n = String(params.n || '');

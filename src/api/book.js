@@ -1,7 +1,7 @@
 // GET    /api/books/<id> -> the whole book (title, pages, words, voice clips)
 // PUT    /api/books/<id> -> save it
 // DELETE /api/books/<id> -> remove the book and its photos (shared voice clips are kept for reuse)
-import { json, error, validId, bucket } from '../../_lib.js';
+import { json, error, validId, bucket } from '../_lib.js';
 
 export async function onRequestGet({ params, env }) {
   if (!validId(params.id)) return error('Not found.', 404);

@@ -1,5 +1,5 @@
 // GET /api/books -> [{id, title, created, pages}] newest first
-import { json, bucket } from '../../_lib.js';
+import { json, bucket } from '../_lib.js';
 
 export async function onRequestGet({ env }) {
   const store = bucket(env); const out = []; let cursor;

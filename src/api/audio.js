@@ -1,5 +1,5 @@
 // GET /api/audio/<key> -> the stored MP3 (never changes, so browsers may keep it)
-import { error, bucket } from '../../_lib.js';
+import { error, bucket } from '../_lib.js';
 
 export async function onRequestGet({ params, env }) {
   const key = String(params.key || '');

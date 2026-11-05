@@ -1,9 +1,16 @@
-# Cloudflare Pages settings for Tap & Read.
+# Cloudflare Worker settings for Tap & Read.
 # Secrets (FAMILY_PASSWORD, ANTHROPIC_API_KEY, DEEPINFRA_API_KEY) are NOT kept here:
 # add them in the Cloudflare dashboard (see README).
+# "name" must match the Worker's name in your Cloudflare dashboard.
 name = "tap-and-read"
-pages_build_output_dir = "public"
+main = "src/worker.js"
 compatibility_date = "2025-09-01"
+
+# The website files. /api/* goes to the code in src/ first.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = ["/api/*"]
 
 # Where books, page photos and voice clips are stored
 [[r2_buckets]]
@@ -14,3 +21,6 @@ bucket_name = "tap-and-read"
 # Kokoro voices, mixed: a blend of Bella and Nicole
 VOICE = "af_bella,af_nicole"
 CLAUDE_MODEL = "claude-sonnet-5-5"
+
+[observability]
+enabled = true

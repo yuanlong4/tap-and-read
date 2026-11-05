@@ -12,7 +12,7 @@ A family website that turns photos of real picture books into books a child can 
 
 | Part | Service | Cost |
 |---|---|---|
-| Website, login, storage (books, photos, voice) | Cloudflare Pages + R2 | Free tier |
+| Website, login, storage (books, photos, voice) | Cloudflare Workers + R2 | Free tier |
 | Reading the page photos | Anthropic API (Claude) | About 1 cent per page |
 | The voice | DeepInfra, Kokoro-82M | Under $1 per million characters (a picture book costs a fraction of a cent) |
 
@@ -20,11 +20,12 @@ Code layout:
 
 ```
 public/            the website (index.html, app.js, styles.css, ocr/ = on-device word finder)
-functions/api/     server code that runs on Cloudflare
+src/worker.js      server entry: sends /api/* to the code below, everything else to public/
+src/api/           server code that runs on Cloudflare
   login.js         family password → signed cookie
   read-page.js     sends a page photo to Claude, returns the lines of text
   tts.js           makes speech on DeepInfra, stores the MP3 in R2 (reused forever)
-  books/, photos/, audio/   storage in R2
+  books.js, book.js, photos.js, audio.js   storage in R2
 wrangler.toml      Cloudflare settings (storage bucket, voice, Claude model)
 ```
 
@@ -36,21 +37,20 @@ Cloudflare's dashboard changes from time to time, so button names may differ sli
 
 1. **Create the storage.** In Cloudflare: **R2 Object Storage → Create bucket**, name it exactly `tap-and-read`.
    Cloudflare may ask you to add a payment method to turn on R2. Normal family use stays inside the free tier.
-2. **Create the website.** **Workers & Pages → Create → Pages → Connect to Git**, choose `tap-and-read`, then:
-   - Production branch: `main`
-   - Framework preset: **None**
+2. **Create the website.** **Workers & Pages → Create → Import a repository**, choose `tap-and-read`, then:
+   - Project name: `tap-and-read` (must match `name` in `wrangler.toml`)
    - Build command: *(leave empty)*
-   - Build output directory: `public`
+   - Deploy command: `npx wrangler deploy` (the default)
 
-   Click **Save and Deploy**. The storage connection is read automatically from `wrangler.toml`.
+   Click **Deploy**. The storage connection and website files are read automatically from `wrangler.toml`.
 3. **Add the secrets.** In the new project: **Settings → Variables and Secrets → Add**, type **Secret**, for Production:
    - `FAMILY_PASSWORD`: the password your family will type to sign in
    - `ANTHROPIC_API_KEY`: your Anthropic key
    - `DEEPINFRA_API_KEY`: your DeepInfra key
 
    Enter keys only here, never in code or chat.
-4. **Redeploy** so the secrets take effect: **Deployments → … → Retry deployment**.
-5. Open `https://tap-and-read.pages.dev` (Cloudflare shows the exact address), sign in, and add a book.
+4. **Redeploy** if the site was already deployed before you added the secrets (**Deployments → Retry**, or push any change to GitHub). Secrets added in the dashboard usually apply right away.
+5. Open the address Cloudflare shows (like `https://tap-and-read.<your-name>.workers.dev`), sign in, and add a book.
    On iPhone/iPad: Safari → Share → **Add to Home Screen** for an app icon.
 
 **Something not working?** Open `https://<your-site>/api/status`. It shows which of the password, storage, Claude and voice are set up, without revealing any secrets.
@@ -71,7 +71,7 @@ Speeds are at the top of `public/app.js` (`WORD_SPEED`, `PAGE_SPEED`). If you ch
 ```
 npm install -g wrangler
 # create .dev.vars with FAMILY_PASSWORD=..., ANTHROPIC_API_KEY=..., DEEPINFRA_API_KEY=...
-wrangler pages dev public
+wrangler dev
 ```
 
 ## Notes
