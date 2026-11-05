@@ -6,6 +6,9 @@ name = "tap-and-read"
 main = "src/worker.js"
 compatibility_date = "2025-09-01"
 
+# Give the site its free address: https://tap-and-read.<your-subdomain>.workers.dev
+workers_dev = true
+
 # The website files. /api/* goes to the code in src/ first.
 [assets]
 directory = "./public"
