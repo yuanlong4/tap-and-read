@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tap &amp; Read</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#fbf6ec">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23ffc94a'/%3E%3Ctext x='32' y='43' font-size='30' text-anchor='middle' font-family='sans-serif' fill='%232b2a33'%3EAa%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Andika:wght@400;700&family=Fredoka:wght@500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="logo">Aa</div>
+    <h1>Tap &amp; Read</h1>
+    <div class="spacer"></div>
+        <span class="chipstat hidden" id="voiceStat"></span>
+    <button class="btn ghost small hidden" id="signOutBtn">Sign out</button>
+    <button class="btn ghost small hidden" id="homeBtn">← My books</button>
+  </header>
+
+  <!-- SIGN IN -->
+  <section id="vLogin" class="hidden">
+    <div class="panel login">
+      <h2 style="font-size:22px">Welcome to Tap &amp; Read</h2>
+      <p class="muted">Enter the family password.</p>
+      <form id="loginForm"><input type="password" id="pw" autocomplete="current-password" placeholder="Family password" required>
+      <button class="btn sun" style="width:100%">Sign in</button></form>
+      <p class="err" id="loginErr"></p>
+    </div>
+  </section>
+
+  <!-- LIBRARY -->
+  <section id="vLibrary">
+    <div class="row" style="justify-content:space-between;margin-bottom:16px">
+      <h2 style="font-size:20px">My books</h2>
+      <button class="btn sun" id="newBookBtn">＋ Add a book</button>
+    </div>
+    <div id="shelf" class="shelf"></div>
+    <div id="emptyShelf" class="empty hidden">
+      <h2>No books yet</h2>
+      <p class="muted">Grown-ups: take a photo of each page of a picture book, then tap <b>Add a book</b>.<br>We'll turn every word into something your child can tap and hear.</p>
+      <button class="btn sun" id="firstBookBtn">＋ Add the first book</button>
+    </div>
+  </section>
+
+  <!-- BUILDER -->
+  <section id="vBuilder" class="hidden">
+    <div class="panel">
+      <h2 style="font-size:21px;margin-bottom:14px">Add a book <span class="muted" style="font-family:Andika;font-weight:400;font-size:15px">· for grown-ups</span></h2>
+      <div class="field">
+        <label for="bTitle"><b>Book title</b></label>
+        <input type="text" id="bTitle" placeholder="e.g. The Little Red Hen">
+      </div>
+      <div class="drop" id="drop">
+        <p style="margin:0 0 10px;font-size:17px"><b>Upload page photos</b> — one photo per page</p>
+        <p class="muted" style="margin:0 0 14px;font-size:14px">Tip: shoot straight on, in good light, with the page filling the frame. Pages are ordered by file name; use the arrows to reorder.</p>
+        <label class="btn" style="display:inline-block">Choose photos<input type="file" id="files" accept="image/*" multiple hidden></label>
+      </div>
+      <div id="thumbs" class="thumbs"></div>
+      <p class="note">✨ Claude reads each page to get the words exactly right, then the reading voice is made for every word and page.</p>
+      <div class="row" style="margin-top:18px">
+        <button class="btn sun" id="buildBtn" disabled>Make it readable</button>
+        <button class="btn ghost" id="cancelBuild">Cancel</button>
+      </div>
+      <div class="progress muted" id="progress"></div>
+    </div>
+  </section>
+
+  <!-- READER -->
+  <section id="vReader" class="hidden">
+    <div class="reader-top">
+      <h2 id="rTitle"></h2>
+      <div class="toggle" id="viewToggle">
+        <button data-v="both" class="on">Photo + words</button>
+        <button data-v="photo">Photo</button>
+        <button data-v="text">Words</button>
+      </div>
+      <div class="toggle" id="speedToggle" title="Reading speed">
+        <button data-s="0.9" class="on">Normal</button>
+        <button data-s="0.55">Slow</button>
+      </div>
+      <button class="btn ghost small" id="editBtn">✎ Fix words</button>
+    </div>
+    <div class="stage" id="stage">
+      <div class="photopane" id="photopane"><img id="pageImg" alt=""></div>
+      <div class="textpane">
+        <div class="words" id="words"></div>
+        <div class="say" id="say"><span class="muted">Tap a word to hear it.</span></div>
+        <div class="src" id="srcNote"></div>
+        <div id="editArea" class="hidden">
+          <h3 style="font-size:17px;margin-top:18px">Fix words on this page</h3>
+          <p class="legend">Tap a word to change it. Clear it to remove it. Words outlined in red are ones the scanner was unsure about.</p>
+          <div class="editwords" id="editWords"></div>
+          <div class="row" style="margin-top:12px"><button class="btn small" id="doneEdit">Done</button></div>
+        </div>
+      </div>
+    </div>
+    <div class="nav">
+      <button class="round" id="prevPg" aria-label="Previous page">‹</button>
+      <div class="pg" id="pgLabel"></div>
+      <button class="readall" id="readAll">▶ Read to me</button>
+      <button class="round" id="nextPg" aria-label="Next page">›</button>
+    </div>
+  </section>
+</div>
+
+<div class="modal hidden" id="modal"><div class="box"><h3 id="mTitle"></h3><p id="mText" class="muted"></p><div class="row" style="justify-content:flex-end"><button class="btn ghost small" id="mNo">Cancel</button><button class="btn small" id="mYes">OK</button></div></div></div>
+
+<script src="ocr/tesseract.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

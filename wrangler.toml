@@ -1,0 +1,16 @@
+# Cloudflare Pages settings for Tap & Read.
+# Secrets (FAMILY_PASSWORD, ANTHROPIC_API_KEY, DEEPINFRA_API_KEY) are NOT kept here:
+# add them in the Cloudflare dashboard (see README).
+name = "tap-and-read"
+pages_build_output_dir = "public"
+compatibility_date = "2025-09-01"
+
+# Where books, page photos and voice clips are stored
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "tap-and-read"
+
+[vars]
+# Kokoro voices, mixed: a blend of Bella and Nicole
+VOICE = "af_bella,af_nicole"
+CLAUDE_MODEL = "claude-sonnet-5-5"
