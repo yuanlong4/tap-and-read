@@ -15,13 +15,20 @@ const OPENAI_STYLE = {
       + 'at a gentle, unhurried pace, with clear words and a friendly, lively tone. Give characters a little expression.',
 };
 
+// OpenAI's voice names; anything else in OPENAI_VOICE (a typo, or a key pasted by mistake) falls back to coral
+const OPENAI_VOICES = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer', 'verse', 'marin', 'cedar'];
+const okModel = (m) => /^(gpt|tts)[a-z0-9.\-]{0,40}$/i.test(m || '');
+
 export function voiceInfo(env) {
   if (env.OPENAI_API_KEY) {
-    const voice = env.OPENAI_VOICE || 'coral', model = env.OPENAI_TTS_MODEL || 'gpt-4o-mini-tts';
+    const asked = String(env.OPENAI_VOICE || '').trim().toLowerCase();
+    const voice = OPENAI_VOICES.includes(asked) ? asked : 'coral';
+    const model = okModel(env.OPENAI_TTS_MODEL) ? env.OPENAI_TTS_MODEL : 'gpt-4o-mini-tts';
     return { provider: 'openai', voice, model, id: `openai:${model}:${voice}:v1` };
   }
   if (env.DEEPINFRA_API_KEY) {
-    const voices = String(env.VOICE || 'af_bella,af_nicole').split(',').map((v) => v.trim()).filter(Boolean);
+    let voices = String(env.VOICE || '').split(',').map((v) => v.trim().toLowerCase()).filter((v) => /^[a-z]{2}_[a-z]{2,20}$/.test(v));
+    if (!voices.length) voices = ['af_bella', 'af_nicole'];   // Kokoro voice names look like af_bella
     return { provider: 'deepinfra', voices, id: `kokoro:${voices.join('+')}:v1` };
   }
   return null;
