@@ -762,7 +762,7 @@ async function redrawPage(b, page) {
   const rc = await redrawCanvas(await fetchCanvas(b, page.versions.orig.n));
   const check = await readPageApi(rc);
   if (textSimilarity(linesFromWords(page.words), check.lines) < SIMILAR_ENOUGH) {
-    const keep = await ask('The redrawn page looks different', 'Claude found different words on the redrawn page, so the AI may have changed some text. Keep the original photo?', 'Keep original', 'Use redraw anyway');
+    const keep = await askInTurn('The redrawn page looks different', `Claude found different words on the redrawn version of page ${b.pages.indexOf(page) + 1}, so the AI may have changed some text. Keep the original photo?`, 'Keep original', 'Use redraw anyway');
     if (keep) return [];
   }
   const old = page.versions.redraw ? [page.versions.redraw.n] : [];
@@ -773,11 +773,42 @@ async function redrawPage(b, page) {
   return old;
 }
 
-let editing = null;   // { book, from, busy, status: {i, text} }
+let editing = null;   // { book, from, busy, status: {i, text}, redrawing: Map(page -> text) }
+let askChain = Promise.resolve();
+const askInTurn = (...a) => { const p = askChain.then(() => ask(...a)); askChain = p.catch(() => {}); return p; };
+// ✨ Redraws run side by side (up to 3 at once; more wait their turn), separately from other changes,
+// so several pages can be tapped without waiting. Only the page being redrawn is paused.
+const REDRAW_AT_ONCE = 3;
+let redrawRunning = 0; const redrawQueue = [];
+function startRedraw(b, page) {
+  if (editing.redrawing.has(page)) return;
+  editing.redrawing.set(page, '✨ Waiting to redraw…'); renderEditPages();
+  const job = new Promise((resolve) => redrawQueue.push({ b, page, resolve }));
+  editing.redrawJobs.add(job); job.finally(() => editing && editing.redrawJobs.delete(job));
+  pumpRedraws();
+}
+function pumpRedraws() {
+  while (redrawRunning < REDRAW_AT_ONCE && redrawQueue.length) {
+    const { b, page, resolve } = redrawQueue.shift(); redrawRunning++;
+    if (editing) { editing.redrawing.set(page, '✨ Redrawing… (about 20 s)'); renderEditPages(); }
+    (async () => {
+      try {
+        const old = await redrawPage(b, page);
+        if (!b.pages.includes(page)) { if (page.versions.redraw) deletePhotos(b, [page.versions.redraw.n]); }   // page was removed meanwhile
+        else await saveBook(b);
+        if (old.length) deletePhotos(b, old);
+      } catch (e) { console.error(e); if (e.status !== 401) alertMsg(`Redraw of page ${b.pages.indexOf(page) + 1} did not work: ${e.message}`); }
+      finally {
+        redrawRunning--; if (editing) { editing.redrawing.delete(page); renderEditPages(); }
+        resolve(); pumpRedraws();
+      }
+    })();
+  }
+}
 const canJoin = (b, i) => { const L = b.pages[i], R = b.pages[i + 1]; return !!(L && R && L.join && R.join && L.join.side === 'L' && R.join.side === 'R' && L.join.group === R.join.group); };
 function openEditPages(b, from) {
   migrateBook(b); stopAll();
-  editing = { book: b, from, busy: false, status: null };
+  editing = { book: b, from, busy: false, status: null, redrawing: new Map(), redrawJobs: new Set() };
   $('eTitle').value = b.title; $('eProg').textContent = '';
   show('vEdit'); renderEditPages();
 }
@@ -785,8 +816,9 @@ function renderEditPages() {
   const b = editing.book, st = editing.status;
   $('vEdit').classList.toggle('locked', editing.busy);
   $('eGrid').innerHTML = b.pages.map((p, i) => {
-    const busy = st && st.i === i;
-    const cap = busy ? st.text : `${p.use === 'redraw' ? '✨ Redrawn' : 'Photo'}${p.join ? (p.join.side === 'L' ? ' · left half' : ' · right half') : ''} · ${p.words.length} word${p.words.length === 1 ? '' : 's'}`;
+    const rd = editing.redrawing.get(p);
+    const busy = (st && st.i === i) || !!rd;
+    const cap = rd || (st && st.i === i) ? (rd || st.text) : `${p.use === 'redraw' ? '✨ Redrawn' : 'Photo'}${p.join ? (p.join.side === 'L' ? ' · left half' : ' · right half') : ''} · ${p.words.length} word${p.words.length === 1 ? '' : 's'}`;
     const redrawBtn = !canRedraw && !p.versions.redraw ? ''
       : p.use === 'redraw' ? `<button data-e="orig" data-i="${i}" title="Go back to the original photo">↩</button>`
       : p.versions.redraw ? `<button data-e="useredraw" data-i="${i}" title="Use the redrawn page again">✨</button>${canRedraw ? `<button data-e="redraw" data-i="${i}" title="Redraw again (AI)">✨+</button>` : ''}`
@@ -794,7 +826,7 @@ function renderEditPages() {
     return `<div class="thumb${busy ? ' busy' : ''}">
       <div class="im"><img src="${photoUrl(b, p.n)}" alt="page ${i + 1}" loading="lazy"><span class="n">p.${i + 1}</span></div>
       <div class="cap">${esc(cap)}</div>
-      <div class="tb">
+      <div class="tb${rd ? ' paused' : ''}">
         <button data-e="l" data-i="${i}" title="Move earlier">◀</button><button data-e="r" data-i="${i}" title="Move later">▶</button>
         <button data-e="rot" data-i="${i}" title="Turn the page">⟳</button>${redrawBtn}
         ${canJoin(b, i) ? `<button data-e="join" data-i="${i}" title="Join with the next page (they were one photo)">⇄</button>` : (p.join ? '' : `<button data-e="split" data-i="${i}" title="Split into two pages">⇆</button>`)}
@@ -818,13 +850,15 @@ async function editOp(i, text, fn) {
 }
 let replaceAt = -1;
 $('eGrid').addEventListener('click', (e) => {
-  const btn = e.target.closest('button'); if (!btn || !editing || editing.busy) return;
+  const btn = e.target.closest('button'); if (!btn || !editing) return;
   const b = editing.book, i = +btn.dataset.i, page = b.pages[i];
+  if (!page || editing.redrawing.has(page)) return;
+  if (btn.dataset.e === 'redraw') { startRedraw(b, page); return; }
+  if (editing.busy) return;
   switch (btn.dataset.e) {
     case 'l': if (i > 0) editOp(-1, '', () => { [b.pages[i - 1], b.pages[i]] = [b.pages[i], b.pages[i - 1]]; }); break;
     case 'r': if (i < b.pages.length - 1) editOp(-1, '', () => { [b.pages[i + 1], b.pages[i]] = [b.pages[i], b.pages[i + 1]]; }); break;
     case 'rot': editOp(i, 'Turning…', () => rotatePage(b, page)); break;
-    case 'redraw': editOp(i, '✨ Redrawing… (about 20 s)', () => redrawPage(b, page)); break;
     case 'orig': editOp(i, 'Switching…', () => useVersion(b, page, 'orig')); break;
     case 'useredraw': editOp(i, 'Switching…', () => useVersion(b, page, 'redraw')); break;
     case 'split': editOp(i, 'Splitting…', () => splitPage(b, i)); break;
@@ -871,6 +905,11 @@ $('eTitle').addEventListener('input', () => {
 });
 $('eDone').onclick = async () => {
   if (editing.busy) return;
+  if (editing.redrawJobs.size) {
+    $('eProg').textContent = `Finishing ${editing.redrawJobs.size} redraw${editing.redrawJobs.size > 1 ? 's' : ''}…`; $('eDone').disabled = true;
+    while (editing.redrawJobs.size) await Promise.all([...editing.redrawJobs]);
+    $('eDone').disabled = false; $('eProg').textContent = '';
+  }
   const b = editing.book, v = $('eTitle').value.trim();
   clearTimeout(titleTimer); if (v && v !== b.title) { b.title = v; }
   try { await saveBook(b); } catch (e) { if (e.status !== 401) alertMsg(e.message); return; }

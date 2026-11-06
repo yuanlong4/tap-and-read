@@ -131,3 +131,5 @@
   #eGrid .thumb .im img{aspect-ratio:3/4;object-fit:contain;background:#f3eddf}
   #eGrid .thumb.busy .cap{color:var(--sky)}
   #vEdit.locked .tb button,#vEdit.locked #eAddLbl{opacity:.45;pointer-events:none}
+  #eGrid .tb.paused button{opacity:.45;pointer-events:none}
+  #vEdit.locked .tb button[data-e="redraw"]{opacity:1;pointer-events:auto}
