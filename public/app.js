@@ -13,7 +13,7 @@ const wordKey = (t) => clean(t).toLowerCase();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Voice settings: words are said slowly with a natural ending ("Duck."), pages a little faster.
-const VOICE_VERSION = 'kokoro-1';
+let VOICE_VERSION = 'unknown';   // set from the server: which voice service + voice is in use
 const WORD_SPEED = 0.8, PAGE_SPEED = 0.95;
 const wordPrompt = (t) => { const c = clean(t); return c.charAt(0).toUpperCase() + c.slice(1) + '.'; };
 
@@ -56,7 +56,8 @@ function setVoiceStat(msg, done) {
 function showLogin() { show('vLogin'); setTimeout(() => $('pw').focus(), 50); }
 $('loginForm').addEventListener('submit', async (e) => {
   e.preventDefault(); $('loginErr').textContent = '';
-  try { await api('/api/login', { method: 'POST', body: JSON.stringify({ password: $('pw').value }) }); $('pw').value = ''; goHome(); }
+  try { await api('/api/login', { method: 'POST', body: JSON.stringify({ password: $('pw').value }) }); $('pw').value = '';
+        const s = await api('/api/status').catch(() => null); if (s && s.voiceId) VOICE_VERSION = s.voiceId; goHome(); }
   catch (err) { $('loginErr').textContent = err.message; }
 });
 $('signOutBtn').onclick = async () => { await api('/api/login', { method: 'POST', body: JSON.stringify({ logout: true }) }).catch(() => {}); showLogin(); };
@@ -289,7 +290,7 @@ let voiceJob = null;
 async function prepareVoice(b) {
   if (voiceJob && voiceJob.id === b.id) return voiceJob.p;
   const run = (async () => {
-    if (b.voice !== VOICE_VERSION) { b.wordClips = {}; b.pages.forEach((p) => { p.clips = null; }); b.voice = VOICE_VERSION; }
+    if (VOICE_VERSION !== 'unknown' && b.voice !== VOICE_VERSION) { b.wordClips = {}; b.pages.forEach((p) => { p.clips = null; }); b.voice = VOICE_VERSION; }
     const jobs = [];
     const seen = new Set();
     // the page being read comes first
@@ -307,12 +308,12 @@ async function prepareVoice(b) {
     await pool(jobs, 4, async (j) => {
       try {
         if (j.kind === 'w') {
-          const r = await api('/api/tts', { method: 'POST', body: JSON.stringify({ text: j.text, speed: WORD_SPEED }) });
+          const r = await api('/api/tts', { method: 'POST', body: JSON.stringify({ text: j.text, kind: 'word', speed: WORD_SPEED }) });
           b.wordClips[j.key] = r.url;
         } else {
           const p = b.pages[j.pi], clips = [];
           for (const c of j.chunks) {
-            const r = await api('/api/tts', { method: 'POST', body: JSON.stringify({ text: c.text, speed: PAGE_SPEED, timestamps: true }) });
+            const r = await api('/api/tts', { method: 'POST', body: JSON.stringify({ text: c.text, kind: 'page', speed: PAGE_SPEED, timestamps: true }) });
             clips.push({ start: c.start, end: c.end, url: r.url, dur: r.duration || null, times: mapTimings(c, p, r.words) });
           }
           if (b.pages[j.pi] === p) { p.clips = clips; p.clipsFor = j.sig; }
@@ -413,7 +414,7 @@ function highlight(i) {
 async function wordUrl(text) {
   const k = wordKey(text); if (!k) return null;
   if (book.wordClips[k]) return book.wordClips[k];
-  const r = await api('/api/tts', { method: 'POST', body: JSON.stringify({ text: wordPrompt(text), speed: WORD_SPEED }) });
+  const r = await api('/api/tts', { method: 'POST', body: JSON.stringify({ text: wordPrompt(text), kind: 'word', speed: WORD_SPEED }) });
   book.wordClips[k] = r.url; return r.url;
 }
 function sayWord(i) {
@@ -434,6 +435,20 @@ function onTap(e) { const t = e.target.closest('[data-i]'); if (t) sayWord(+t.da
 $('words').addEventListener('click', onTap);
 $('photopane').addEventListener('click', onTap);
 
+// When there are no exact word timings, estimate them from word lengths and pauses at punctuation
+const estCache = new WeakMap();
+function estWord(c, page, t, dur) {
+  if (!estCache.has(c)) {
+    const ws = page.words.slice(c.start, c.end + 1);
+    const w = ws.map((x) => clean(x.text).length + 2 + (/[,;:]$/.test(x.text) ? 3 : 0) + (/[.!?]["”']?$/.test(x.text) ? 5 : 0));
+    const tot = w.reduce((a, b) => a + b, 0); let acc = 0;
+    estCache.set(c, w.map((x) => { const s = acc / tot; acc += x; return s; }));
+  }
+  const starts = estCache.get(c);
+  const lead = Math.min(0.25, dur * 0.05), f = Math.max(0, (t - lead) / Math.max(0.1, dur - lead * 2));
+  let k = 0; while (k + 1 < starts.length && f >= starts[k + 1]) k++;
+  return k;
+}
 $('readAll').onclick = async () => {
   if (reading) { stopAll(); highlight(-1); return; }
   const page = book.pages[pg]; if (!page.words.length) return;
@@ -454,7 +469,7 @@ $('readAll').onclick = async () => {
       const ok = await playUrl(c.url, r, (t, dur) => {
         let k = 0;
         if (c.times) { while (k + 1 < n && t >= c.times[k + 1] - 0.03) k++; }
-        else if (dur) { k = Math.min(n - 1, Math.floor(t / dur * n)); }
+        else if (dur) { k = estWord(c, page, t, dur); }
         if (c.start + k !== lastIdx) { lastIdx = c.start + k; highlight(lastIdx); }
       });
       if (!ok) break;
@@ -515,6 +530,7 @@ $('editWords').addEventListener('click', (e) => {
 (async () => {
   try {
     const s = await api('/api/status');
+    if (s.voiceId) VOICE_VERSION = s.voiceId;
     if (!s.signedIn) return showLogin();
     goHome();
   } catch (e) { showLogin(); }

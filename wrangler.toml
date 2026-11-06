@@ -21,7 +21,10 @@ binding = "BUCKET"
 bucket_name = "tap-and-read"
 
 [vars]
-# Kokoro voices, mixed: a blend of Bella and Nicole
+# Reading voice. With OPENAI_API_KEY set, OpenAI is used; otherwise DeepInfra (Kokoro).
+# OpenAI voices to try at https://www.openai.fm : alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse
+OPENAI_VOICE = "coral"
+# Kokoro voices for DeepInfra, blended
 VOICE = "af_bella,af_nicole"
 CLAUDE_MODEL = "claude-sonnet-5-5"
 
