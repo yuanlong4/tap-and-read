@@ -303,64 +303,94 @@ async function findBoxes(blob, lines) {
 }
 const putPhoto = async (bookId, n, blob) => api(`/api/photos/${bookId}/${n}`, { method: 'PUT', body: blob, headers: { 'content-type': 'image/jpeg' } });
 const SIMILAR_ENOUGH = 1;   // every word must match (punctuation and capitals ignored)
+function cropX(canvas, a, b) {   // the part of the picture from a to b (fractions of the width)
+  const x0 = Math.round(canvas.width * a), x1 = Math.round(canvas.width * b);
+  const c = document.createElement('canvas'); c.width = Math.max(1, x1 - x0); c.height = canvas.height;
+  c.getContext('2d').drawImage(canvas, x0, 0, c.width, c.height, 0, 0, c.width, c.height);
+  return c;
+}
+// One photo -> its page(s). Claude reads it, says if it must be turned and whether it shows two facing pages;
+// two pages are cut apart at the fold. A ✨ redrawn version is used only if Claude finds the same words on it.
+// Photos are stored as they are made. Returns { pages: [...], spread, rejected }.
+async function photoToPages(bookId, canvas, redraw, newId) {
+  let lines = null, turn = 0, spread = null;
+  try {
+    const r = await readPageApi(canvas);
+    lines = r.lines; turn = (r.rotate || 0) / 90; spread = r.spread || null;
+    if (turn) canvas = rotateTimes(canvas, turn);
+  } catch (e) { if (e.status === 401 || e.status === 503) throw e; console.warn('Claude could not read the page', e.message); }
+  let rc = null, rejected = false;
+  if (redraw && lines) {
+    rc = rotateTimes(redraw, turn);
+    try { const r2 = await readPageApi(rc); if (textSimilarity(lines, r2.lines) < SIMILAR_ENOUGH) { rc = null; rejected = true; } }
+    catch (e) { rc = null; rejected = true; }
+  }
+  const parts = spread ? [[0, spread.split / 1000, spread.left], [spread.split / 1000, 1, spread.right]] : [[0, 1, lines]];
+  let join = null;
+  if (spread) {   // keep the whole photo too, so the two pages can be joined back
+    const n = newId(); await putPhoto(bookId, n, await toBlob(canvas));
+    join = { group: 'g' + n, whole: { n, w: canvas.width, h: canvas.height } };
+  }
+  const pages = [];
+  for (let k = 0; k < parts.length; k++) {
+    const [a, b, pl] = parts[k];
+    const oc = spread ? cropX(canvas, a, b) : canvas, on = newId(), ob = await toBlob(oc); await putPhoto(bookId, on, ob);
+    const pg = { lines: pl, source: lines ? 'claude' : 'ocr', versions: { orig: { n: on, w: oc.width, h: oc.height } }, blob: ob, use: 'orig' };
+    if (rc) {
+      const rp = spread ? cropX(rc, a, b) : rc, rn = newId(), rb = await toBlob(rp); await putPhoto(bookId, rn, rb);
+      pg.versions.redraw = { n: rn, w: rp.width, h: rp.height }; pg.blob = rb; pg.use = 'redraw';
+    }
+    if (join) pg.join = { ...join, side: k ? 'R' : 'L' };
+    pages.push(pg);
+  }
+  return { pages, spread: !!spread, rejected };
+}
+// Find the words on a page's picture and make the page record
+async function finishPage(pp) {
+  const shown = pp.versions[pp.use];
+  return { n: shown.n, w: shown.w, h: shown.h, source: pp.source, words: await findBoxes(pp.blob, pp.lines), clips: null,
+    versions: pp.versions, use: pp.use, ...(pp.join ? { join: pp.join } : {}) };
+}
 
 $('buildBtn').onclick = async () => {
   const title = $('bTitle').value.trim() || 'My book';
-  const pages = pending.slice(), prog = $('progress'), N = pages.length;
+  const photos = pending.slice(), prog = $('progress'), N = photos.length;
   $('buildBtn').disabled = true; $('cancelBuild').disabled = true;
   const id = 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-  const rejected = [];
+  let seq = 0; const newId = () => seq++;
   try {
-    // 1. Claude reads each page photo (two at a time); sideways pages are turned; photos are stored.
-    //    A redrawn page is read too, and only used if Claude finds the same words on it.
+    // 1. Claude reads each photo (two at a time): turned upright, split if it shows two pages, stored
     let claudeDone = 0;
-    const tick = () => { prog.textContent = `Reading the pages… Claude has read ${claudeDone} of ${N}`; };
+    const tick = () => { prog.textContent = `Reading the pages… Claude has read ${claudeDone} of ${N} photos`; };
     tick();
-    const ready = pages.map(() => { let r; const pr = new Promise((x) => { r = x; }); return { pr, r }; });
-    const work = pool(pages, 2, async (p, i) => {
-      let canvas = finalCanvas(p), lines = null, turn = 0;
+    const ready = photos.map(() => { let r; const pr = new Promise((x) => { r = x; }); return { pr, r }; });
+    const work = pool(photos, 2, async (p, i) => {
       try {
-        const r = await readPageApi(canvas);
-        lines = r.lines; turn = (r.rotate || 0) / 90;
-        if (turn) canvas = rotateTimes(canvas, turn);
-      } catch (e) { console.warn('Claude could not read page', i + 1, e.message); if (e.status === 503 || e.status === 401) { ready[i].r({ error: e }); throw e; } }
-      const origBlob = await toBlob(canvas);
-      await putPhoto(id, i, origBlob);
-      const out = { lines, orig: { n: i, w: canvas.width, h: canvas.height }, blob: origBlob, use: 'orig' };
-      if (p.useRedraw && p.redraw && lines) {
-        const rc = rotateTimes(p.redraw, turn);
-        try {
-          const r2 = await readPageApi(rc);
-          if (textSimilarity(lines, r2.lines) >= SIMILAR_ENOUGH) {
-            const rb = await toBlob(rc); await putPhoto(id, N + i, rb);
-            Object.assign(out, { redraw: { n: N + i, w: rc.width, h: rc.height }, blob: rb, use: 'redraw' });
-          } else rejected.push(i + 1);
-        } catch (e) { rejected.push(i + 1); }
-      }
-      claudeDone++; tick();
-      ready[i].r(out);
+        const out = await photoToPages(id, finalCanvas(p), p.useRedraw ? p.redraw : null, newId);
+        claudeDone++; tick(); ready[i].r(out);
+      } catch (e) { ready[i].r({ error: e }); throw e; }
     });
     work.catch(() => {});
-    // 2. as each page is ready, find where its words sit on the picture shown
-    const ocr = await getOCR(); let cur = -1;
-    ocrLogger = (m) => { if (cur >= 0 && m.status === 'recognizing text') { const el = $('st' + cur); if (el) el.style.width = Math.round(m.progress * 100) + '%'; } };
-    const book = { id, title, created: Date.now(), updated: Date.now(), wordClips: {}, voice: VOICE_VERSION, photoSeq: 2 * N, pages: [] };
+    // 2. as each photo is ready, find where the words sit on each of its pages
+    const book = { id, title, created: Date.now(), updated: Date.now(), wordClips: {}, voice: VOICE_VERSION, pages: [] };
+    const notes = [], rejected = [];
+    ocrLogger = null;
     for (let i = 0; i < N; i++) {
       const r = await ready[i].pr; if (r.error) throw r.error;
-      cur = i; const { data } = await ocr.recognize(r.blob, {}, { blocks: true, text: true });
-      const found = ocrWords(data), shown = r[r.use];
-      book.pages.push({ n: shown.n, w: shown.w, h: shown.h, source: r.lines ? 'claude' : 'ocr',
-        words: r.lines ? alignWords(r.lines, found) : cleanOCROnly(found), clips: null,
-        versions: { orig: { ...r.orig }, ...(r.redraw ? { redraw: { ...r.redraw } } : {}) }, use: r.use });
+      const first = book.pages.length + 1;
+      for (const pp of r.pages) book.pages.push(await finishPage(pp));
+      if (r.spread) notes.push(`Photo ${i + 1} had two pages, so it became pages ${first} and ${first + 1}.`);
+      if (r.rejected) rejected.push(i + 1);
       const el = $('st' + i); if (el) el.style.width = '100%';
     }
-    ocrLogger = null;
     await work;
+    book.photoSeq = seq;
     // 3. save it
     await saveBook(book);
     openReader(book, 0);
     prepareVoice(book);
-    if (rejected.length) alertMsg(`The redrawn version of page ${rejected.join(', ')} seemed to have different words, so the original photo is used there. You can try ✨ again from Edit pages.`);
+    if (rejected.length) notes.push(`The redrawn version of photo ${rejected.join(', ')} seemed to have different words, so the original photo is used there. You can try ✨ again from Edit pages.`);
+    if (notes.length) { ask('Your book is ready', notes.join(' '), 'OK'); $('mNo').classList.add('hidden'); setTimeout(() => $('mNo').classList.remove('hidden'), 0); }
   } catch (err) {
     console.error(err);
     if (err.status !== 401) prog.textContent = 'Something went wrong: ' + err.message;
@@ -693,16 +723,39 @@ async function rotatePage(b, page) {
   const cur = page.versions[page.use]; page.n = cur.n; page.w = cur.w; page.h = cur.h;
   return old;
 }
-// A new page from a photo: straighten, Claude reads it, store it, find the words on it
-async function pageFromFile(b, file, step) {
+// New page(s) from a photo: straighten, Claude reads it (two facing pages are split), store, find the words
+async function pagesFromFile(b, file, step) {
   let c = await loadCanvas(file);
   step('straightening…'); try { const cr = await Scan.straighten(c); if (cr) c = cr; } catch (e) { console.warn(e); }
-  step('Claude is reading…'); let lines = null;
-  try { const r = await readPageApi(c); lines = r.lines; if (r.rotate) c = rotateTimes(c, r.rotate / 90); }
-  catch (e) { if (e.status === 401 || e.status === 503) throw e; console.warn('Claude could not read the page', e.message); }
-  const n = nextPhoto(b), blob = await toBlob(c); await putPhoto(b.id, n, blob);
+  step('Claude is reading…');
+  const r = await photoToPages(b.id, c, null, () => nextPhoto(b));
   step('finding the words…');
-  return { n, w: c.width, h: c.height, source: lines ? 'claude' : 'ocr', words: await findBoxes(blob, lines), clips: null, versions: { orig: { n, w: c.width, h: c.height } }, use: 'orig' };
+  const out = []; for (const pp of r.pages) out.push(await finishPage(pp));
+  return out;
+}
+// ⇆ Split one page down the middle into two (Claude reads each half)
+async function splitPage(b, i) {
+  const page = b.pages[i];
+  const whole = { ...page.versions.orig }; delete whole.boxes;
+  const c = await fetchCanvas(b, whole.n);
+  const group = 'g' + whole.n, made = [];
+  for (const [k, a, z] of [[0, 0, 0.5], [1, 0.5, 1]]) {
+    const half = cropX(c, a, z);
+    let lines = null; try { lines = (await readPageApi(half)).lines; } catch (e) { if (e.status === 401 || e.status === 503) throw e; }
+    const n = nextPhoto(b), blob = await toBlob(half); await putPhoto(b.id, n, blob);
+    made.push(await finishPage({ lines, source: lines ? 'claude' : 'ocr', versions: { orig: { n, w: half.width, h: half.height } }, blob, use: 'orig', join: { group, whole, side: k ? 'R' : 'L' } }));
+  }
+  b.pages.splice(i, 1, ...made);
+  return page.versions.redraw ? [page.versions.redraw.n] : [];   // the whole photo is kept for ⇄ Join
+}
+// ⇄ Join two split halves back into the whole photo
+async function joinPages(b, i) {
+  const L = b.pages[i], R = b.pages[i + 1], whole = L.join.whole;
+  const lines = [...linesFromWords(L.words), '', ...linesFromWords(R.words)].filter((l, k, arr) => l || (k > 0 && arr[k - 1]));
+  const r = await fetch(photoUrl(b, whole.n)); if (!r.ok) throw new Error('Could not load the whole photo.');
+  const page = await finishPage({ lines: lines.length ? lines : null, source: L.source, versions: { orig: { n: whole.n, w: whole.w, h: whole.h } }, blob: await r.blob(), use: 'orig' });
+  b.pages.splice(i, 2, page);
+  return [L, R].flatMap((p) => Object.values(p.versions).map((v) => v.n));
 }
 // ✨ Redraw an existing page from its original photo; keep it only if Claude finds the same words
 async function redrawPage(b, page) {
@@ -721,6 +774,7 @@ async function redrawPage(b, page) {
 }
 
 let editing = null;   // { book, from, busy, status: {i, text} }
+const canJoin = (b, i) => { const L = b.pages[i], R = b.pages[i + 1]; return !!(L && R && L.join && R.join && L.join.side === 'L' && R.join.side === 'R' && L.join.group === R.join.group); };
 function openEditPages(b, from) {
   migrateBook(b); stopAll();
   editing = { book: b, from, busy: false, status: null };
@@ -732,7 +786,7 @@ function renderEditPages() {
   $('vEdit').classList.toggle('locked', editing.busy);
   $('eGrid').innerHTML = b.pages.map((p, i) => {
     const busy = st && st.i === i;
-    const cap = busy ? st.text : `${p.use === 'redraw' ? '✨ Redrawn' : 'Photo'} · ${p.words.length} word${p.words.length === 1 ? '' : 's'}`;
+    const cap = busy ? st.text : `${p.use === 'redraw' ? '✨ Redrawn' : 'Photo'}${p.join ? (p.join.side === 'L' ? ' · left half' : ' · right half') : ''} · ${p.words.length} word${p.words.length === 1 ? '' : 's'}`;
     const redrawBtn = !canRedraw && !p.versions.redraw ? ''
       : p.use === 'redraw' ? `<button data-e="orig" data-i="${i}" title="Go back to the original photo">↩</button>`
       : p.versions.redraw ? `<button data-e="useredraw" data-i="${i}" title="Use the redrawn page again">✨</button>${canRedraw ? `<button data-e="redraw" data-i="${i}" title="Redraw again (AI)">✨+</button>` : ''}`
@@ -743,6 +797,7 @@ function renderEditPages() {
       <div class="tb">
         <button data-e="l" data-i="${i}" title="Move earlier">◀</button><button data-e="r" data-i="${i}" title="Move later">▶</button>
         <button data-e="rot" data-i="${i}" title="Turn the page">⟳</button>${redrawBtn}
+        ${canJoin(b, i) ? `<button data-e="join" data-i="${i}" title="Join with the next page (they were one photo)">⇄</button>` : (p.join ? '' : `<button data-e="split" data-i="${i}" title="Split into two pages">⇆</button>`)}
         <button data-e="replace" data-i="${i}" title="Replace with a new photo">↻</button>
         <button data-e="words" data-i="${i}" title="Fix words on this page">✎</button>
         <button data-e="del" data-i="${i}" title="Remove this page">✕</button>
@@ -759,7 +814,7 @@ async function editOp(i, text, fn) {
     await saveBook(b);
     if (unused.length) deletePhotos(b, unused);
   } catch (e) { console.error(e); if (e.status !== 401) alertMsg(e.message); }
-  finally { editing.busy = false; editing.status = null; $('eProg').textContent = ''; renderEditPages(); }
+  finally { editing.busy = false; editing.status = null; $('eProg').textContent = editing.note || ''; editing.note = ''; renderEditPages(); }
 }
 let replaceAt = -1;
 $('eGrid').addEventListener('click', (e) => {
@@ -772,12 +827,14 @@ $('eGrid').addEventListener('click', (e) => {
     case 'redraw': editOp(i, '✨ Redrawing… (about 20 s)', () => redrawPage(b, page)); break;
     case 'orig': editOp(i, 'Switching…', () => useVersion(b, page, 'orig')); break;
     case 'useredraw': editOp(i, 'Switching…', () => useVersion(b, page, 'redraw')); break;
+    case 'split': editOp(i, 'Splitting…', () => splitPage(b, i)); break;
+    case 'join': editOp(i, 'Joining…', () => joinPages(b, i)); break;
     case 'replace': replaceAt = i; $('eReplace').click(); break;
     case 'words': saveBook(b).catch(() => {}); openReader(b, i); $('editArea').classList.remove('hidden'); renderEdit(); break;
     case 'del':
       if (b.pages.length === 1) { alertMsg('A book needs at least one page. To remove the whole book, use Delete in the library.'); break; }
       ask('Remove this page?', `Page ${i + 1} will be removed from “${b.title}”.`, 'Remove').then((yes) => {
-        if (yes) editOp(-1, '', () => { const gone = b.pages.splice(i, 1)[0]; return Object.values(gone.versions).map((v) => v.n); });
+        if (yes) editOp(-1, '', () => { const gone = b.pages.splice(i, 1)[0]; return Object.values(gone.versions).map((v) => v.n); });   // the whole photo of a split stays for the other half
       });
       break;
   }
@@ -786,8 +843,9 @@ $('eReplace').addEventListener('change', (e) => {
   const f = e.target.files[0]; e.target.value = ''; if (!f || replaceAt < 0) return;
   const b = editing.book, i = replaceAt; replaceAt = -1;
   editOp(i, 'New photo: getting ready…', async () => {
-    const np = await pageFromFile(b, f, (t) => { editing.status = { i, text: 'New photo: ' + t }; renderEditPages(); });
-    const old = b.pages[i]; b.pages[i] = np;
+    const np = await pagesFromFile(b, f, (t) => { editing.status = { i, text: 'New photo: ' + t }; renderEditPages(); });
+    const old = b.pages[i]; b.pages.splice(i, 1, ...np);
+    if (np.length > 1) editing.note = `The new photo had two pages, so it became pages ${i + 1} and ${i + 2}.`;
     return Object.values(old.versions).map((v) => v.n);
   });
 });
@@ -798,8 +856,9 @@ $('eAdd').addEventListener('change', (e) => {
   editOp(-1, '', async () => {
     Scan.load().catch(() => {});
     for (let k = 0; k < files.length; k++) {
-      const np = await pageFromFile(b, files[k], (t) => { $('eProg').textContent = `Adding page ${k + 1} of ${files.length}: ${t}`; });
-      b.pages.push(np); renderEditPages();
+      const np = await pagesFromFile(b, files[k], (t) => { $('eProg').textContent = `Adding photo ${k + 1} of ${files.length}: ${t}`; });
+      if (np.length > 1) editing.note = (editing.note ? editing.note + ' ' : '') + `Photo ${k + 1} had two pages, so it was split.`;
+      b.pages.push(...np); renderEditPages();
       await saveBook(b);
     }
   });
