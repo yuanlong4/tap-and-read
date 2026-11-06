@@ -3,6 +3,7 @@
 A family website that turns photos of real picture books into books a child can read word by word.
 
 - A grown-up photographs each page. **Claude** reads the text exactly, and every word becomes tappable, on the photo and in a large clean version beside it.
+- Photos are **straightened and cropped automatically** (the table and background are cut away, slanted shots are squared up), and Claude turns sideways pages upright. The page then fills the screen in **Full page** view.
 - Tapping a word says it slowly in a warm, natural voice (OpenAI's steerable voice, told to sound like a kind teacher). **Read to me** reads the page and highlights each word as it is spoken.
 - **Fix words** lets a grown-up correct anything the reader got wrong.
 - Books, photos and voice live in your own Cloudflare storage, so every phone, tablet and computer in the family sees the same library. The voice is made **once** per word or page and reused forever.
@@ -19,7 +20,8 @@ A family website that turns photos of real picture books into books a child can 
 Code layout:
 
 ```
-public/            the website (index.html, app.js, styles.css, ocr/ = on-device word finder)
+public/            the website (index.html, app.js, styles.css, scan.js = page straightener,
+                   ocr/ = on-device word finder, vendor/opencv.js = image library for straightening)
 src/worker.js      server entry: sends /api/* to the code below, everything else to public/
 src/api/           server code that runs on Cloudflare
   login.js         family password → signed cookie

@@ -11,10 +11,19 @@ Rules:
 - Leave out page numbers, and words that are only part of the artwork (signs, labels on objects) unless they are clearly part of the story text.
 - If there is no story text, return an empty list.
 
-Reply with only JSON in this shape: {"lines": ["First line of text", "second line", "", "new paragraph"]}`;
+- If the photo is sideways or upside down, read it anyway, and say how many degrees it must be turned CLOCKWISE so the text is upright: 0, 90, 180 or 270.
+
+Reply with only JSON in this shape: {"rotate": 0, "lines": ["First line of text", "second line", "", "new paragraph"]}`;
 
 function parseLines(text) {
-  const tryParse = (s) => { try { const v = JSON.parse(s); return v && Array.isArray(v.lines) ? v.lines.map((l) => String(l ?? '')) : null; } catch { return null; } };
+  const tryParse = (s) => {
+    try {
+      const v = JSON.parse(s);
+      if (!v || !Array.isArray(v.lines)) return null;
+      const r = [0, 90, 180, 270].includes(+v.rotate) ? +v.rotate : 0;
+      return { lines: v.lines.map((l) => String(l ?? '')), rotate: r };
+    } catch { return null; }
+  };
   return tryParse(text)
     || tryParse((text.match(/```(?:json)?\s*([\s\S]*?)```/) || [])[1] || '')
     || tryParse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1));
@@ -43,7 +52,7 @@ export async function onRequestPost({ request, env }) {
   const data = await res.json().catch(() => null);
   if (!res.ok) return error('Claude could not read the page: ' + ((data && data.error && data.error.message) || res.status), 502);
   const text = (data.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('\n');
-  const lines = parseLines(text);
-  if (!lines) return error('Claude replied in an unexpected format.', 502);
-  return json({ lines });
+  const out = parseLines(text);
+  if (!out) return error('Claude replied in an unexpected format.', 502);
+  return json(out);
 }

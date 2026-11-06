@@ -34,6 +34,7 @@ async function pool(items, n, fn) {
 
 function show(view) {
   for (const v of ['vLogin', 'vLibrary', 'vBuilder', 'vReader']) $(v).classList.toggle('hidden', v !== view);
+  document.body.classList.toggle('reading', view === 'vReader');
   $('homeBtn').classList.toggle('hidden', view === 'vLibrary' || view === 'vLogin');
   $('signOutBtn').classList.toggle('hidden', view !== 'vLibrary');
   stopAll();
@@ -176,36 +177,65 @@ function alignWords(lines, ocr) {
 
 /* ================= adding a book ================= */
 let pending = [];
-function openBuilder() { pending = []; $('bTitle').value = ''; $('progress').textContent = ''; renderThumbs(); show('vBuilder'); }
-function loadImage(file) {
+function openBuilder() { pending = []; $('bTitle').value = ''; $('progress').textContent = ''; renderThumbs(); show('vBuilder'); Scan.load().catch(() => {}); }
+function loadCanvas(file) {   // photo -> canvas, at most 2000 px on the long edge (phone photos come out upright)
   return new Promise((res, rej) => {
     const url = URL.createObjectURL(file); const img = new Image();
     img.onload = () => {
       const max = 2000, s = Math.min(1, max / Math.max(img.width, img.height));
       const c = document.createElement('canvas'); c.width = Math.round(img.width * s); c.height = Math.round(img.height * s);
-      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url);
-      c.toBlob((blob) => res({ blob, src: URL.createObjectURL(blob), w: c.width, h: c.height }), 'image/jpeg', 0.85);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url); res(c);
     };
-    img.onerror = rej; img.src = url;
+    img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('Could not open ' + file.name)); };
+    img.src = url;
   });
 }
+const toBlob = (canvas, q = 0.85) => new Promise((res) => canvas.toBlob(res, 'image/jpeg', q));
+function rotateTimes(canvas, quarterTurns) { let c = canvas; for (let i = 0; i < ((quarterTurns % 4) + 4) % 4; i++) c = Scan.rotate90(c); return c; }
+// the version of a page we'll use: straightened (unless switched off), turned as asked
+function finalCanvas(p) { return rotateTimes(p.useCrop && p.crop ? p.crop : p.orig, p.rot); }
+async function refreshThumb(p) { const c = finalCanvas(p); if (p.src) URL.revokeObjectURL(p.src); p.src = URL.createObjectURL(await toBlob(c, 0.7)); }
+
 async function addFiles(list) {
   const files = [...list].filter((f) => f.type.startsWith('image/') || /\.(jpe?g|png|heic|webp)$/i.test(f.name)).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-  for (const f of files) { try { pending.push({ name: f.name, ...(await loadImage(f)) }); } catch (e) {} }
+  const added = [];
+  for (const f of files) {
+    try { const orig = await loadCanvas(f); const p = { name: f.name, orig, crop: null, useCrop: true, rot: 0, busy: true }; await refreshThumb(p); pending.push(p); added.push(p); }
+    catch (e) { console.warn(e); }
+  }
   renderThumbs();
+  if (!added.length) return;
+  $('progress').textContent = 'Straightening the pages…';
+  for (const p of added) {   // find the page in each photo, cut away the background, straighten it
+    try { p.crop = await Scan.straighten(p.orig); } catch (e) { console.warn('straighten failed', e); }
+    p.busy = false; await refreshThumb(p); renderThumbs();
+  }
+  if ($('progress').textContent.startsWith('Straightening')) $('progress').textContent = '';
 }
 function renderThumbs() {
   $('thumbs').innerHTML = pending.map((p, i) => `
-    <div class="thumb"><img src="${p.src}" alt="page ${i + 1}"><span class="n">p.${i + 1}</span>
-      <div class="ctl"><button data-a="l" data-i="${i}" title="Move earlier">◀</button><button data-a="r" data-i="${i}" title="Move later">▶</button><button data-a="x" data-i="${i}" title="Remove">✕</button></div>
-      <div class="st"><i id="st${i}"></i></div></div>`).join('');
-  $('buildBtn').disabled = !pending.length;
+    <div class="thumb${p.busy ? ' busy' : ''}">
+      <div class="im"><img src="${p.src}" alt="page ${i + 1}"><span class="n">p.${i + 1}</span><div class="st"><i id="st${i}"></i></div></div>
+      <div class="cap">${p.busy ? 'Straightening…' : p.crop ? (p.useCrop ? '✓ Straightened' : 'Original photo') : 'Page not found: original'}</div>
+      <div class="tb">
+        <button data-a="l" data-i="${i}" title="Move earlier">◀</button><button data-a="r" data-i="${i}" title="Move later">▶</button>
+        <button data-a="rot" data-i="${i}" title="Turn the page">⟳</button>
+        ${p.crop ? `<button data-a="crop" data-i="${i}" title="Switch between the straightened page and the original photo">✂</button>` : ''}
+        <button data-a="x" data-i="${i}" title="Remove">✕</button>
+      </div>
+    </div>`).join('');
+  $('buildBtn').disabled = !pending.length || pending.some((p) => p.busy);
 }
 $('thumbs').addEventListener('click', (e) => {
+  if (e.target.closest('button') && pending[+e.target.closest('button').dataset.i]?.busy) return;
   const b = e.target.closest('button'); if (!b) return; const i = +b.dataset.i;
   if (b.dataset.a === 'x') pending.splice(i, 1);
   if (b.dataset.a === 'l' && i > 0) [pending[i - 1], pending[i]] = [pending[i], pending[i - 1]];
   if (b.dataset.a === 'r' && i < pending.length - 1) [pending[i + 1], pending[i]] = [pending[i], pending[i + 1]];
+  if (b.dataset.a === 'rot' || b.dataset.a === 'crop') {
+    const p = pending[i]; if (b.dataset.a === 'rot') p.rot = (p.rot + 1) % 4; else p.useCrop = !p.useCrop;
+    refreshThumb(p).then(renderThumbs); return;
+  }
   renderThumbs();
 });
 $('files').addEventListener('change', (e) => { addFiles(e.target.files); e.target.value = ''; });
@@ -223,30 +253,38 @@ $('buildBtn').onclick = async () => {
   $('buildBtn').disabled = true; $('cancelBuild').disabled = true;
   const id = 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   try {
-    // 1. upload the photos, and ask Claude to read each page (two at a time)
+    // 1. Claude reads each page (two at a time); if a page is sideways, turn it; then store the photo
     let claudeDone = 0;
     const tick = () => { prog.textContent = `Reading the pages… Claude has read ${claudeDone} of ${pages.length}`; };
     tick();
-    const claudeRes = new Array(pages.length);
-    const claudeAll = pool(pages, 2, async (p, i) => {
-      await api(`/api/photos/${id}/${i}`, { method: 'PUT', body: p.blob, headers: { 'content-type': 'image/jpeg' } });
-      try { claudeRes[i] = (await api('/api/read-page', { method: 'POST', body: JSON.stringify({ image: await blobToB64(p.blob) }) })).lines; }
-      catch (e) { console.warn('Claude could not read page', i + 1, e.message); claudeRes[i] = null; if (e.status === 503) throw e; }
+    const ready = pages.map(() => { let r; const pr = new Promise((x) => { r = x; }); return { pr, r }; });
+    const work = pool(pages, 2, async (p, i) => {
+      let canvas = finalCanvas(p), lines = null;
+      try {
+        const r = await api('/api/read-page', { method: 'POST', body: JSON.stringify({ image: await blobToB64(await toBlob(canvas)) }) });
+        lines = r.lines;
+        if (r.rotate) canvas = rotateTimes(canvas, r.rotate / 90);
+      } catch (e) { console.warn('Claude could not read page', i + 1, e.message); if (e.status === 503 || e.status === 401) { ready[i].r({ error: e }); throw e; } }
+      const blob = await toBlob(canvas);
+      await api(`/api/photos/${id}/${i}`, { method: 'PUT', body: blob, headers: { 'content-type': 'image/jpeg' } });
       claudeDone++; tick();
+      ready[i].r({ lines, blob, w: canvas.width, h: canvas.height });
     });
-    // 2. meanwhile, find where each word sits on the photo
-    const ocr = await getOCR(); let cur = -1; const ocrRes = [];
-    ocrLogger = (m) => { if (cur >= 0 && m.status === 'recognizing text') { const el = $('st' + cur); if (el) el.style.width = Math.round(m.progress * 80) + '%'; } };
-    for (let i = 0; i < pages.length; i++) { cur = i; const { data } = await ocr.recognize(pages[i].blob, {}, { blocks: true, text: true }); ocrRes.push(ocrWords(data)); }
-    ocrLogger = null;
-    await claudeAll;
-    // 3. put it together and save
+    work.catch(() => {});
+    // 2. as each page is ready, find where its words sit on the photo
+    const ocr = await getOCR(); let cur = -1;
+    ocrLogger = (m) => { if (cur >= 0 && m.status === 'recognizing text') { const el = $('st' + cur); if (el) el.style.width = Math.round(m.progress * 100) + '%'; } };
     const book = { id, title, created: Date.now(), updated: Date.now(), wordClips: {}, voice: VOICE_VERSION, pages: [] };
-    pages.forEach((p, i) => {
-      const lines = claudeRes[i];
-      book.pages.push({ n: i, w: p.w, h: p.h, source: lines ? 'claude' : 'ocr', words: lines ? alignWords(lines, ocrRes[i]) : cleanOCROnly(ocrRes[i]), clips: null });
-      $('st' + i).style.width = '100%';
-    });
+    for (let i = 0; i < pages.length; i++) {
+      const pg = await ready[i].pr; if (pg.error) throw pg.error;
+      cur = i; const { data } = await ocr.recognize(pg.blob, {}, { blocks: true, text: true });
+      const found = ocrWords(data);
+      book.pages.push({ n: i, w: pg.w, h: pg.h, source: pg.lines ? 'claude' : 'ocr', words: pg.lines ? alignWords(pg.lines, found) : cleanOCROnly(found), clips: null });
+      const el = $('st' + i); if (el) el.style.width = '100%';
+    }
+    ocrLogger = null;
+    await work;
+    // 3. save it
     await saveBook(book);
     openReader(book, 0);
     prepareVoice(book);
@@ -377,12 +415,25 @@ function syllables(word) {
 
 /* ================= reader ================= */
 let book = null, pg = 0;
-function openReader(b, p) { book = b; pg = p; show('vReader'); $('rTitle').textContent = b.title; $('editArea').classList.add('hidden'); renderPage(); }
+function openReader(b, p) { book = b; pg = p; show('vReader'); $('rTitle').textContent = b.title; $('editArea').classList.add('hidden'); setView(view); renderPage(); }
+// Size the page photo so the whole page fits in the window
+function fitPhoto() {
+  if (!book || $('vReader').classList.contains('hidden')) return;
+  const page = book.pages[pg], pane = $('photopane');
+  if (!$('stage').classList.contains('photo-only')) { pane.style.width = ''; return; }
+  const top = $('photowrap').getBoundingClientRect().top + window.scrollY;
+  const navH = $('vReader').querySelector('.nav').offsetHeight + 30;
+  const availH = Math.max(240, window.innerHeight - top - navH), availW = $('photowrap').clientWidth;
+  pane.style.width = Math.floor(Math.min(availW, availH * page.w / page.h)) + 'px';
+}
+window.addEventListener('resize', fitPhoto);
+window.addEventListener('orientationchange', () => setTimeout(fitPhoto, 300));
 const pageWords = () => book.pages[pg].words;
 function renderPage() {
   stopAll();
   const page = book.pages[pg];
   $('pageImg').src = `/api/photos/${book.id}/${page.n ?? pg}`;
+  $('bubble').classList.add('hidden'); fitPhoto();
   $('photopane').querySelectorAll('.hot').forEach((n) => n.remove());
   page.words.forEach((w, i) => {
     if (!w.box) return;
@@ -422,6 +473,10 @@ function sayWord(i) {
   stopAll(); unlockAudio(); highlight(i);
   const syl = syllables(word);
   $('say').innerHTML = `<span class="big">${esc(word)}</span>${syl.length > 1 ? `<span class="syl">${syl.map(esc).join(' · ')}</span>` : ''}`;
+  if ($('stage').classList.contains('photo-only')) {
+    const bub = $('bubble'); bub.innerHTML = `${esc(word)}${syl.length > 1 ? `<span class="syl">${syl.map(esc).join(' · ')}</span>` : ''}`;
+    bub.classList.remove('hidden'); clearTimeout(bub._t); bub._t = setTimeout(() => bub.classList.add('hidden'), 2500);
+  }
   const my = readToken;
   const cached = book.wordClips[wordKey(w.text)];
   if (!cached) $('say').insertAdjacentHTML('beforeend', '<span class="syl" id="wait">🎙️ one moment…</span>');
@@ -487,11 +542,14 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'ArrowRight') $('nextPg').click();
   if (e.key === 'ArrowLeft') $('prevPg').click();
 });
-$('viewToggle').addEventListener('click', (e) => {
-  const b = e.target.closest('button'); if (!b) return;
-  [...$('viewToggle').children].forEach((x) => x.classList.toggle('on', x === b));
-  $('stage').className = 'stage' + (b.dataset.v === 'photo' ? ' photo-only' : b.dataset.v === 'text' ? ' text-only' : '');
-});
+let view = (() => { try { return localStorage.getItem('tr-view') || 'photo'; } catch (e) { return 'photo'; } })();
+function setView(v) {
+  view = v; try { localStorage.setItem('tr-view', v); } catch (e) {}
+  [...$('viewToggle').children].forEach((x) => x.classList.toggle('on', x.dataset.v === v));
+  $('stage').className = 'stage' + (v === 'photo' ? ' photo-only' : v === 'text' ? ' text-only' : '');
+  fitPhoto();
+}
+$('viewToggle').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) setView(b.dataset.v); });
 $('speedToggle').addEventListener('click', (e) => {
   const b = e.target.closest('button'); if (!b) return;
   [...$('speedToggle').children].forEach((x) => x.classList.toggle('on', x === b)); rate = +b.dataset.s < 0.8 ? 0.7 : 1;

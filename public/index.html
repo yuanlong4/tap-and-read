@@ -57,7 +57,7 @@
       </div>
       <div class="drop" id="drop">
         <p style="margin:0 0 10px;font-size:17px"><b>Upload page photos</b> — one photo per page</p>
-        <p class="muted" style="margin:0 0 14px;font-size:14px">Tip: shoot straight on, in good light, with the page filling the frame. Pages are ordered by file name; use the arrows to reorder.</p>
+        <p class="muted" style="margin:0 0 14px;font-size:14px">Tip: good light, the whole page in the photo. Pages are straightened and cropped automatically. Pages are ordered by file name; use the arrows to reorder.</p>
         <label class="btn" style="display:inline-block">Choose photos<input type="file" id="files" accept="image/*" multiple hidden></label>
       </div>
       <div id="thumbs" class="thumbs"></div>
@@ -75,8 +75,8 @@
     <div class="reader-top">
       <h2 id="rTitle"></h2>
       <div class="toggle" id="viewToggle">
-        <button data-v="both" class="on">Photo + words</button>
-        <button data-v="photo">Photo</button>
+        <button data-v="photo" class="on">Full page</button>
+        <button data-v="both">Page + words</button>
         <button data-v="text">Words</button>
       </div>
       <div class="toggle" id="speedToggle" title="Reading speed">
@@ -85,8 +85,8 @@
       </div>
       <button class="btn ghost small" id="editBtn">✎ Fix words</button>
     </div>
-    <div class="stage" id="stage">
-      <div class="photopane" id="photopane"><img id="pageImg" alt=""></div>
+    <div class="stage photo-only" id="stage">
+      <div class="photowrap" id="photowrap"><div class="photopane" id="photopane"><img id="pageImg" alt=""><div class="bubble hidden" id="bubble"></div></div></div>
       <div class="textpane">
         <div class="words" id="words"></div>
         <div class="say" id="say"><span class="muted">Tap a word to hear it.</span></div>
@@ -111,6 +111,7 @@
 <div class="modal hidden" id="modal"><div class="box"><h3 id="mTitle"></h3><p id="mText" class="muted"></p><div class="row" style="justify-content:flex-end"><button class="btn ghost small" id="mNo">Cancel</button><button class="btn small" id="mYes">OK</button></div></div></div>
 
 <script src="ocr/tesseract.min.js"></script>
+<script src="scan.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
