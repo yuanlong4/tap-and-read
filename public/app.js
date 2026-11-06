@@ -319,13 +319,21 @@ async function photoToPages(bookId, canvas, redraw, newId) {
     lines = r.lines; turn = (r.rotate || 0) / 90; spread = r.spread || null;
     if (turn) canvas = rotateTimes(canvas, turn);
   } catch (e) { if (e.status === 401 || e.status === 503) throw e; console.warn('Claude could not read the page', e.message); }
-  let rc = null, rejected = false;
-  if (redraw && lines) {
-    rc = rotateTimes(redraw, turn);
-    try { const r2 = await readPageApi(rc); if (textSimilarity(lines, r2.lines) < SIMILAR_ENOUGH) { rc = null; rejected = true; } }
-    catch (e) { rc = null; rejected = true; }
-  }
   const parts = spread ? [[0, spread.split / 1000, spread.left], [spread.split / 1000, 1, spread.right]] : [[0, 1, lines]];
+  const halves = parts.map(([a, b]) => (spread ? cropX(canvas, a, b) : canvas));
+  // ✨ A redraw is kept only if Claude finds the same words on it. Two facing pages are cut apart first
+  // and each page is redrawn on its own, so the AI never decides where a page ends.
+  let rejected = false, rcs = parts.map(() => null);
+  if (redraw && lines) {
+    rcs = await Promise.all(parts.map(async ([, , pl], k) => {
+      try {
+        const rc = spread ? await redrawCanvas(halves[k]) : rotateTimes(redraw, turn);
+        const r2 = await readPageApi(rc);
+        if (textSimilarity(pl || [], r2.lines) < SIMILAR_ENOUGH) { rejected = true; return null; }
+        return rc;
+      } catch (e) { if (e.status === 401) throw e; rejected = true; return null; }
+    }));
+  }
   let join = null;
   if (spread) {   // keep the whole photo too, so the two pages can be joined back
     const n = newId(); await putPhoto(bookId, n, await toBlob(canvas));
@@ -333,11 +341,12 @@ async function photoToPages(bookId, canvas, redraw, newId) {
   }
   const pages = [];
   for (let k = 0; k < parts.length; k++) {
-    const [a, b, pl] = parts[k];
-    const oc = spread ? cropX(canvas, a, b) : canvas, on = newId(), ob = await toBlob(oc); await putPhoto(bookId, on, ob);
+    const pl = parts[k][2];
+    const oc = halves[k], on = newId(), ob = await toBlob(oc); await putPhoto(bookId, on, ob);
     const pg = { lines: pl, source: lines ? 'claude' : 'ocr', versions: { orig: { n: on, w: oc.width, h: oc.height } }, blob: ob, use: 'orig' };
-    if (rc) {
-      const rp = spread ? cropX(rc, a, b) : rc, rn = newId(), rb = await toBlob(rp); await putPhoto(bookId, rn, rb);
+    const rp = rcs[k];
+    if (rp) {
+      const rn = newId(), rb = await toBlob(rp); await putPhoto(bookId, rn, rb);
       pg.versions.redraw = { n: rn, w: rp.width, h: rp.height }; pg.blob = rb; pg.use = 'redraw';
     }
     if (join) pg.join = { ...join, side: k ? 'R' : 'L' };
@@ -746,6 +755,8 @@ async function splitPage(b, i) {
     made.push(await finishPage({ lines, source: lines ? 'claude' : 'ocr', versions: { orig: { n, w: half.width, h: half.height } }, blob, use: 'orig', join: { group, whole, side: k ? 'R' : 'L' } }));
   }
   b.pages.splice(i, 1, ...made);
+  // the page had a ✨ redraw: redraw each new half on its own, so the redraw is not lost
+  if (page.versions.redraw && canRedraw) editing.afterOp = () => made.forEach((p) => startRedraw(b, p));
   return page.versions.redraw ? [page.versions.redraw.n] : [];   // the whole photo is kept for ⇄ Join
 }
 // ⇄ Join two split halves back into the whole photo
@@ -846,7 +857,10 @@ async function editOp(i, text, fn) {
     await saveBook(b);
     if (unused.length) deletePhotos(b, unused);
   } catch (e) { console.error(e); if (e.status !== 401) alertMsg(e.message); }
-  finally { editing.busy = false; editing.status = null; $('eProg').textContent = editing.note || ''; editing.note = ''; renderEditPages(); }
+  finally {
+    editing.busy = false; editing.status = null; $('eProg').textContent = editing.note || ''; editing.note = ''; renderEditPages();
+    const after = editing.afterOp; editing.afterOp = null; if (after) after();
+  }
 }
 let replaceAt = -1;
 $('eGrid').addEventListener('click', (e) => {
