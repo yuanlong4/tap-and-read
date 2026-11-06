@@ -13,5 +13,6 @@ export async function onRequestGet({ request, env }) {
     },
     voiceId: (voiceInfo(env) || {}).id || null,
     voiceService: (voiceInfo(env) || {}).provider || null,
+    redraw: !!env.OPENAI_API_KEY,
   });
 }

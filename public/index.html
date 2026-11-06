@@ -70,6 +70,24 @@
     </div>
   </section>
 
+  <!-- EDIT PAGES -->
+  <section id="vEdit" class="hidden">
+    <div class="panel">
+      <div class="row" style="justify-content:space-between;margin-bottom:12px">
+        <h2 style="font-size:21px">Edit pages <span class="muted" style="font-family:Andika;font-weight:400;font-size:15px">· for grown-ups</span></h2>
+        <button class="btn sun" id="eDone">Done</button>
+      </div>
+      <div class="field"><label for="eTitle"><b>Book title</b></label><input type="text" id="eTitle"></div>
+      <p class="note">Changes are saved as you go. Every page keeps its original photo, so ✨ redraws and turns can be undone.</p>
+      <div id="eGrid" class="thumbs"></div>
+      <div class="row" style="margin-top:18px">
+        <label class="btn" id="eAddLbl">＋ Add pages<input type="file" id="eAdd" accept="image/*" multiple hidden></label>
+        <span class="muted" id="eProg"></span>
+      </div>
+      <input type="file" id="eReplace" accept="image/*" hidden>
+    </div>
+  </section>
+
   <!-- READER -->
   <section id="vReader" class="hidden">
     <div class="reader-top">
@@ -84,6 +102,7 @@
         <button data-s="0.55">Slow</button>
       </div>
       <button class="btn ghost small" id="editBtn">✎ Fix words</button>
+      <button class="btn ghost small" id="editPagesBtn">▤ Edit pages</button>
     </div>
     <div class="stage photo-only" id="stage">
       <div class="photowrap" id="photowrap"><div class="photopane" id="photopane"><img id="pageImg" alt=""><div class="bubble hidden" id="bubble"></div></div></div>

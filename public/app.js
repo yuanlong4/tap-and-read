@@ -14,6 +14,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Voice settings: words are said slowly with a natural ending ("Duck."), pages a little faster.
 let VOICE_VERSION = 'unknown';   // set from the server: which voice service + voice is in use
+let canRedraw = false;           // ✨ Redraw is available when the OpenAI key is set
 const WORD_SPEED = 0.8, PAGE_SPEED = 0.95;
 const wordPrompt = (t) => { const c = clean(t); return c.charAt(0).toUpperCase() + c.slice(1) + '.'; };
 
@@ -33,15 +34,15 @@ async function pool(items, n, fn) {
 }
 
 function show(view) {
-  for (const v of ['vLogin', 'vLibrary', 'vBuilder', 'vReader']) $(v).classList.toggle('hidden', v !== view);
+  for (const v of ['vLogin', 'vLibrary', 'vBuilder', 'vReader', 'vEdit']) $(v).classList.toggle('hidden', v !== view);
   document.body.classList.toggle('reading', view === 'vReader');
   $('homeBtn').classList.toggle('hidden', view === 'vLibrary' || view === 'vLogin');
   $('signOutBtn').classList.toggle('hidden', view !== 'vLibrary');
   stopAll();
 }
-function ask(title, text, yes = 'OK') {
+function ask(title, text, yes = 'OK', no = 'Cancel') {
   return new Promise((res) => {
-    $('mTitle').textContent = title; $('mText').textContent = text; $('mYes').textContent = yes;
+    $('mTitle').textContent = title; $('mText').textContent = text; $('mYes').textContent = yes; $('mNo').textContent = no;
     $('modal').classList.remove('hidden');
     const done = (v) => { $('modal').classList.add('hidden'); res(v); };
     $('mYes').onclick = () => done(true); $('mNo').onclick = () => done(false);
@@ -58,7 +59,7 @@ function showLogin() { show('vLogin'); setTimeout(() => $('pw').focus(), 50); }
 $('loginForm').addEventListener('submit', async (e) => {
   e.preventDefault(); $('loginErr').textContent = '';
   try { await api('/api/login', { method: 'POST', body: JSON.stringify({ password: $('pw').value }) }); $('pw').value = '';
-        const s = await api('/api/status').catch(() => null); if (s && s.voiceId) VOICE_VERSION = s.voiceId; goHome(); }
+        const s = await api('/api/status').catch(() => null); if (s && s.voiceId) VOICE_VERSION = s.voiceId; canRedraw = !!(s && s.redraw); goHome(); }
   catch (err) { $('loginErr').textContent = err.message; }
 });
 $('signOutBtn').onclick = async () => { await api('/api/login', { method: 'POST', body: JSON.stringify({ logout: true }) }).catch(() => {}); showLogin(); };
@@ -73,11 +74,12 @@ async function goHome() {
     <div class="book">
       <button class="cover" data-open="${b.id}" style="background-image:url(/api/photos/${b.id}/0)" aria-label="Open ${esc(b.title)}"></button>
       <div class="meta"><b>${esc(b.title)}</b><span>${b.pages} page${b.pages === 1 ? '' : 's'}</span></div>
-      <div class="acts"><button class="btn small sun" data-open="${b.id}">Read</button><button class="btn small ghost" data-del="${b.id}">Delete</button></div>
+      <div class="acts"><button class="btn small sun" data-open="${b.id}">Read</button><button class="btn small ghost" data-edit="${b.id}">Edit</button><button class="btn small ghost" data-del="${b.id}">Delete</button></div>
     </div>`).join('');
 }
 $('shelf').addEventListener('click', async (e) => {
-  const o = e.target.closest('[data-open]'), d = e.target.closest('[data-del]');
+  const o = e.target.closest('[data-open]'), d = e.target.closest('[data-del]'), ed = e.target.closest('[data-edit]');
+  if (ed) { try { openEditPages(await api('/api/books/' + ed.dataset.edit), 'library'); } catch (err) { if (err.status !== 401) alertMsg(err.message); } return; }
   if (o) { try { const b = await api('/api/books/' + o.dataset.open); openReader(b, 0); prepareVoice(b); } catch (err) { if (err.status !== 401) alertMsg(err.message); } }
   if (d) {
     const b = books.find((x) => x.id === d.dataset.del);
@@ -194,7 +196,7 @@ const toBlob = (canvas, q = 0.85) => new Promise((res) => canvas.toBlob(res, 'im
 function rotateTimes(canvas, quarterTurns) { let c = canvas; for (let i = 0; i < ((quarterTurns % 4) + 4) % 4; i++) c = Scan.rotate90(c); return c; }
 // the version of a page we'll use: straightened (unless switched off), turned as asked
 function finalCanvas(p) { return rotateTimes(p.useCrop && p.crop ? p.crop : p.orig, p.rot); }
-async function refreshThumb(p) { const c = finalCanvas(p); if (p.src) URL.revokeObjectURL(p.src); p.src = URL.createObjectURL(await toBlob(c, 0.7)); }
+async function refreshThumb(p) { const c = p.useRedraw && p.redraw ? p.redraw : finalCanvas(p); if (p.src) URL.revokeObjectURL(p.src); p.src = URL.createObjectURL(await toBlob(c, 0.7)); }
 
 async function addFiles(list) {
   const files = [...list].filter((f) => f.type.startsWith('image/') || /\.(jpe?g|png|heic|webp)$/i.test(f.name)).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
@@ -216,25 +218,37 @@ function renderThumbs() {
   $('thumbs').innerHTML = pending.map((p, i) => `
     <div class="thumb${p.busy ? ' busy' : ''}">
       <div class="im"><img src="${p.src}" alt="page ${i + 1}"><span class="n">p.${i + 1}</span><div class="st"><i id="st${i}"></i></div></div>
-      <div class="cap">${p.busy ? 'Straightening…' : p.crop ? (p.useCrop ? '✓ Straightened' : 'Original photo') : 'Page not found: original'}</div>
+      <div class="cap">${p.busy ? 'Straightening…' : p.redrawBusy ? '✨ Redrawing… (about 20 s)' : p.redraw && p.useRedraw ? '✨ Redrawn' : p.crop ? (p.useCrop ? '✓ Straightened' : 'Original photo') : 'Page not found: original'}</div>
       <div class="tb">
         <button data-a="l" data-i="${i}" title="Move earlier">◀</button><button data-a="r" data-i="${i}" title="Move later">▶</button>
         <button data-a="rot" data-i="${i}" title="Turn the page">⟳</button>
         ${p.crop ? `<button data-a="crop" data-i="${i}" title="Switch between the straightened page and the original photo">✂</button>` : ''}
+        ${canRedraw ? `<button data-a="redraw" data-i="${i}" title="${p.redraw ? (p.useRedraw ? 'Go back to the photo' : 'Use the redrawn page') : 'Redraw as a clean scan (AI)'}">${p.redraw && p.useRedraw ? '↩' : '✨'}</button>` : ''}
         <button data-a="x" data-i="${i}" title="Remove">✕</button>
       </div>
     </div>`).join('');
-  $('buildBtn').disabled = !pending.length || pending.some((p) => p.busy);
+  $('buildBtn').disabled = !pending.length || pending.some((p) => p.busy || p.redrawBusy);
 }
 $('thumbs').addEventListener('click', (e) => {
-  if (e.target.closest('button') && pending[+e.target.closest('button').dataset.i]?.busy) return;
+  if (e.target.closest('button') && (pending[+e.target.closest('button').dataset.i]?.busy || pending[+e.target.closest('button').dataset.i]?.redrawBusy)) return;
   const b = e.target.closest('button'); if (!b) return; const i = +b.dataset.i;
   if (b.dataset.a === 'x') pending.splice(i, 1);
   if (b.dataset.a === 'l' && i > 0) [pending[i - 1], pending[i]] = [pending[i], pending[i - 1]];
   if (b.dataset.a === 'r' && i < pending.length - 1) [pending[i + 1], pending[i]] = [pending[i], pending[i + 1]];
   if (b.dataset.a === 'rot' || b.dataset.a === 'crop') {
     const p = pending[i]; if (b.dataset.a === 'rot') p.rot = (p.rot + 1) % 4; else p.useCrop = !p.useCrop;
+    p.redraw = null; p.useRedraw = false;   // the redrawn version no longer matches
     refreshThumb(p).then(renderThumbs); return;
+  }
+  if (b.dataset.a === 'redraw') {
+    const p = pending[i];
+    if (p.redraw) { p.useRedraw = !p.useRedraw; refreshThumb(p).then(renderThumbs); return; }
+    p.redrawBusy = true; renderThumbs();
+    redrawCanvas(finalCanvas(p))
+      .then(async (c) => { p.redraw = c; p.useRedraw = true; await refreshThumb(p); })
+      .catch((err) => alertMsg('Redraw did not work: ' + err.message))
+      .finally(() => { p.redrawBusy = false; renderThumbs(); });
+    return;
   }
   renderThumbs();
 });
@@ -246,40 +260,98 @@ drop.addEventListener('drop', (e) => addFiles(e.dataTransfer.files));
 $('cancelBuild').onclick = () => goHome();
 
 const blobToB64 = (blob) => new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.onerror = rej; fr.readAsDataURL(blob); });
+function b64ToBlob(b64, type = 'image/jpeg') { const bin = atob(b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new Blob([u], { type }); }
+function blobToCanvas(blob) {
+  return new Promise((res, rej) => {
+    const url = URL.createObjectURL(blob), img = new Image();
+    img.onload = () => { const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight; c.getContext('2d').drawImage(img, 0, 0); URL.revokeObjectURL(url); res(c); };
+    img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('Could not open the picture.')); };
+    img.src = url;
+  });
+}
+const readPageApi = async (canvas) => api('/api/read-page', { method: 'POST', body: JSON.stringify({ image: await blobToB64(await toBlob(canvas)) }) });
+// ✨ Redraw: OpenAI's image model turns the photo into a clean, flat "scan" of the same page
+async function redrawCanvas(canvas) {
+  const r = await api('/api/redraw', { method: 'POST', body: JSON.stringify({ image: await blobToB64(await toBlob(canvas, 0.9)), w: canvas.width, h: canvas.height }) });
+  return blobToCanvas(b64ToBlob(r.image));
+}
+// How alike two readings of a page are (1 = same words), word by word
+function textSimilarity(linesA, linesB) {
+  const toks = (ls) => ls.join(' ').split(/\s+/).map(norm).filter(Boolean);
+  const a = toks(linesA), b = toks(linesB);
+  if (!a.length && !b.length) return 1;
+  const m = a.length, n = b.length; let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) { const cur = [i]; for (let j = 1; j <= n; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); prev = cur; }
+  return 1 - prev[n] / Math.max(m, n);
+}
+// The page's words back as printed lines (paragraph gaps as "")
+function linesFromWords(words) {
+  const out = []; let last = null, cur = [];
+  for (const w of words) {
+    if (last !== null && w.line !== last) { out.push(cur.join(' ')); cur = []; if (w.line - last >= 1000) out.push(''); }
+    cur.push(w.text); last = w.line;
+  }
+  if (cur.length) out.push(cur.join(' '));
+  return out;
+}
+// Find where the given words sit on a picture
+async function findBoxes(blob, lines) {
+  const ocr = await getOCR();
+  const { data } = await ocr.recognize(blob, {}, { blocks: true, text: true });
+  const found = ocrWords(data);
+  return lines ? alignWords(lines, found) : cleanOCROnly(found);
+}
+const putPhoto = async (bookId, n, blob) => api(`/api/photos/${bookId}/${n}`, { method: 'PUT', body: blob, headers: { 'content-type': 'image/jpeg' } });
+const SIMILAR_ENOUGH = 1;   // every word must match (punctuation and capitals ignored)
 
 $('buildBtn').onclick = async () => {
   const title = $('bTitle').value.trim() || 'My book';
-  const pages = pending.slice(), prog = $('progress');
+  const pages = pending.slice(), prog = $('progress'), N = pages.length;
   $('buildBtn').disabled = true; $('cancelBuild').disabled = true;
   const id = 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const rejected = [];
   try {
-    // 1. Claude reads each page (two at a time); if a page is sideways, turn it; then store the photo
+    // 1. Claude reads each page photo (two at a time); sideways pages are turned; photos are stored.
+    //    A redrawn page is read too, and only used if Claude finds the same words on it.
     let claudeDone = 0;
-    const tick = () => { prog.textContent = `Reading the pages… Claude has read ${claudeDone} of ${pages.length}`; };
+    const tick = () => { prog.textContent = `Reading the pages… Claude has read ${claudeDone} of ${N}`; };
     tick();
     const ready = pages.map(() => { let r; const pr = new Promise((x) => { r = x; }); return { pr, r }; });
     const work = pool(pages, 2, async (p, i) => {
-      let canvas = finalCanvas(p), lines = null;
+      let canvas = finalCanvas(p), lines = null, turn = 0;
       try {
-        const r = await api('/api/read-page', { method: 'POST', body: JSON.stringify({ image: await blobToB64(await toBlob(canvas)) }) });
-        lines = r.lines;
-        if (r.rotate) canvas = rotateTimes(canvas, r.rotate / 90);
+        const r = await readPageApi(canvas);
+        lines = r.lines; turn = (r.rotate || 0) / 90;
+        if (turn) canvas = rotateTimes(canvas, turn);
       } catch (e) { console.warn('Claude could not read page', i + 1, e.message); if (e.status === 503 || e.status === 401) { ready[i].r({ error: e }); throw e; } }
-      const blob = await toBlob(canvas);
-      await api(`/api/photos/${id}/${i}`, { method: 'PUT', body: blob, headers: { 'content-type': 'image/jpeg' } });
+      const origBlob = await toBlob(canvas);
+      await putPhoto(id, i, origBlob);
+      const out = { lines, orig: { n: i, w: canvas.width, h: canvas.height }, blob: origBlob, use: 'orig' };
+      if (p.useRedraw && p.redraw && lines) {
+        const rc = rotateTimes(p.redraw, turn);
+        try {
+          const r2 = await readPageApi(rc);
+          if (textSimilarity(lines, r2.lines) >= SIMILAR_ENOUGH) {
+            const rb = await toBlob(rc); await putPhoto(id, N + i, rb);
+            Object.assign(out, { redraw: { n: N + i, w: rc.width, h: rc.height }, blob: rb, use: 'redraw' });
+          } else rejected.push(i + 1);
+        } catch (e) { rejected.push(i + 1); }
+      }
       claudeDone++; tick();
-      ready[i].r({ lines, blob, w: canvas.width, h: canvas.height });
+      ready[i].r(out);
     });
     work.catch(() => {});
-    // 2. as each page is ready, find where its words sit on the photo
+    // 2. as each page is ready, find where its words sit on the picture shown
     const ocr = await getOCR(); let cur = -1;
     ocrLogger = (m) => { if (cur >= 0 && m.status === 'recognizing text') { const el = $('st' + cur); if (el) el.style.width = Math.round(m.progress * 100) + '%'; } };
-    const book = { id, title, created: Date.now(), updated: Date.now(), wordClips: {}, voice: VOICE_VERSION, pages: [] };
-    for (let i = 0; i < pages.length; i++) {
-      const pg = await ready[i].pr; if (pg.error) throw pg.error;
-      cur = i; const { data } = await ocr.recognize(pg.blob, {}, { blocks: true, text: true });
-      const found = ocrWords(data);
-      book.pages.push({ n: i, w: pg.w, h: pg.h, source: pg.lines ? 'claude' : 'ocr', words: pg.lines ? alignWords(pg.lines, found) : cleanOCROnly(found), clips: null });
+    const book = { id, title, created: Date.now(), updated: Date.now(), wordClips: {}, voice: VOICE_VERSION, photoSeq: 2 * N, pages: [] };
+    for (let i = 0; i < N; i++) {
+      const r = await ready[i].pr; if (r.error) throw r.error;
+      cur = i; const { data } = await ocr.recognize(r.blob, {}, { blocks: true, text: true });
+      const found = ocrWords(data), shown = r[r.use];
+      book.pages.push({ n: shown.n, w: shown.w, h: shown.h, source: r.lines ? 'claude' : 'ocr',
+        words: r.lines ? alignWords(r.lines, found) : cleanOCROnly(found), clips: null,
+        versions: { orig: { ...r.orig }, ...(r.redraw ? { redraw: { ...r.redraw } } : {}) }, use: r.use });
       const el = $('st' + i); if (el) el.style.width = '100%';
     }
     ocrLogger = null;
@@ -288,6 +360,7 @@ $('buildBtn').onclick = async () => {
     await saveBook(book);
     openReader(book, 0);
     prepareVoice(book);
+    if (rejected.length) alertMsg(`The redrawn version of page ${rejected.join(', ')} seemed to have different words, so the original photo is used there. You can try ✨ again from Edit pages.`);
   } catch (err) {
     console.error(err);
     if (err.status !== 401) prog.textContent = 'Something went wrong: ' + err.message;
@@ -415,7 +488,7 @@ function syllables(word) {
 
 /* ================= reader ================= */
 let book = null, pg = 0;
-function openReader(b, p) { book = b; pg = p; show('vReader'); $('rTitle').textContent = b.title; $('editArea').classList.add('hidden'); setView(view); renderPage(); }
+function openReader(b, p) { migrateBook(b); book = b; pg = p; show('vReader'); $('rTitle').textContent = b.title; $('editArea').classList.add('hidden'); setView(view); renderPage(); }
 // Size the page photo so the whole page fits in the window
 function fitPhoto() {
   if (!book || $('vReader').classList.contains('hidden')) return;
@@ -584,11 +657,176 @@ $('editWords').addEventListener('click', (e) => {
   inp.addEventListener('blur', commit, { once: true });
 });
 
+/* ================= edit pages (for grown-ups) ================= */
+const photoUrl = (b, n) => `/api/photos/${b.id}/${n}`;
+// older books: give every page a record of its photo versions
+function migrateBook(b) {
+  for (const p of b.pages) if (!p.versions) { p.versions = { orig: { n: p.n ?? b.pages.indexOf(p), w: p.w, h: p.h } }; p.use = 'orig'; p.n = p.versions.orig.n; }
+  if (b.photoSeq == null) b.photoSeq = 1 + Math.max(-1, ...b.pages.flatMap((p) => Object.values(p.versions).map((v) => v.n)));
+}
+const nextPhoto = (b) => b.photoSeq++;
+async function fetchCanvas(b, n) { const r = await fetch(photoUrl(b, n)); if (!r.ok) throw new Error('Could not load a page photo.'); return blobToCanvas(await r.blob()); }
+const deletePhotos = (b, ns) => Promise.all(ns.map((n) => api(photoUrl(b, n), { method: 'DELETE' }).catch(() => {})));
+
+// Show the original photo or the redrawn one (tap spots are found for each picture once, then remembered)
+async function useVersion(b, page, which) {
+  const v = page.versions[which]; if (!v || page.use === which) return;
+  page.versions[page.use].boxes = page.words.map((w) => w.box);
+  let boxes = v.boxes;
+  if (!boxes || boxes.length !== page.words.length) {
+    const r = await fetch(photoUrl(b, v.n)); if (!r.ok) throw new Error('Could not load a page photo.');
+    boxes = (await findBoxes(await r.blob(), linesFromWords(page.words))).map((w) => w.box);
+  }
+  page.words.forEach((w, i) => { w.box = boxes[i] || null; });
+  page.use = which; page.n = v.n; page.w = v.w; page.h = v.h;
+}
+// Turn a page a quarter turn clockwise (every version, and the tap spots with it)
+async function rotatePage(b, page) {
+  const old = [];
+  for (const [k, v] of Object.entries(page.versions)) {
+    const c = Scan.rotate90(await fetchCanvas(b, v.n)); const n = nextPhoto(b);
+    await putPhoto(b.id, n, await toBlob(c)); old.push(v.n);
+    const rb = (x) => (x ? { x0: v.h - x.y1, y0: x.x0, x1: v.h - x.y0, y1: x.x1 } : null);
+    if (k === page.use) page.words.forEach((w) => { w.box = rb(w.box); });
+    page.versions[k] = { n, w: v.h, h: v.w, ...(v.boxes ? { boxes: v.boxes.map(rb) } : {}) };
+  }
+  const cur = page.versions[page.use]; page.n = cur.n; page.w = cur.w; page.h = cur.h;
+  return old;
+}
+// A new page from a photo: straighten, Claude reads it, store it, find the words on it
+async function pageFromFile(b, file, step) {
+  let c = await loadCanvas(file);
+  step('straightening…'); try { const cr = await Scan.straighten(c); if (cr) c = cr; } catch (e) { console.warn(e); }
+  step('Claude is reading…'); let lines = null;
+  try { const r = await readPageApi(c); lines = r.lines; if (r.rotate) c = rotateTimes(c, r.rotate / 90); }
+  catch (e) { if (e.status === 401 || e.status === 503) throw e; console.warn('Claude could not read the page', e.message); }
+  const n = nextPhoto(b), blob = await toBlob(c); await putPhoto(b.id, n, blob);
+  step('finding the words…');
+  return { n, w: c.width, h: c.height, source: lines ? 'claude' : 'ocr', words: await findBoxes(blob, lines), clips: null, versions: { orig: { n, w: c.width, h: c.height } }, use: 'orig' };
+}
+// ✨ Redraw an existing page from its original photo; keep it only if Claude finds the same words
+async function redrawPage(b, page) {
+  const rc = await redrawCanvas(await fetchCanvas(b, page.versions.orig.n));
+  const check = await readPageApi(rc);
+  if (textSimilarity(linesFromWords(page.words), check.lines) < SIMILAR_ENOUGH) {
+    const keep = await ask('The redrawn page looks different', 'Claude found different words on the redrawn page, so the AI may have changed some text. Keep the original photo?', 'Keep original', 'Use redraw anyway');
+    if (keep) return [];
+  }
+  const old = page.versions.redraw ? [page.versions.redraw.n] : [];
+  if (page.use === 'redraw') await useVersion(b, page, 'orig');
+  const n = nextPhoto(b), blob = await toBlob(rc); await putPhoto(b.id, n, blob);
+  page.versions.redraw = { n, w: rc.width, h: rc.height, boxes: (await findBoxes(blob, linesFromWords(page.words))).map((w) => w.box) };
+  await useVersion(b, page, 'redraw');
+  return old;
+}
+
+let editing = null;   // { book, from, busy, status: {i, text} }
+function openEditPages(b, from) {
+  migrateBook(b); stopAll();
+  editing = { book: b, from, busy: false, status: null };
+  $('eTitle').value = b.title; $('eProg').textContent = '';
+  show('vEdit'); renderEditPages();
+}
+function renderEditPages() {
+  const b = editing.book, st = editing.status;
+  $('vEdit').classList.toggle('locked', editing.busy);
+  $('eGrid').innerHTML = b.pages.map((p, i) => {
+    const busy = st && st.i === i;
+    const cap = busy ? st.text : `${p.use === 'redraw' ? '✨ Redrawn' : 'Photo'} · ${p.words.length} word${p.words.length === 1 ? '' : 's'}`;
+    const redrawBtn = !canRedraw && !p.versions.redraw ? ''
+      : p.use === 'redraw' ? `<button data-e="orig" data-i="${i}" title="Go back to the original photo">↩</button>`
+      : p.versions.redraw ? `<button data-e="useredraw" data-i="${i}" title="Use the redrawn page again">✨</button>${canRedraw ? `<button data-e="redraw" data-i="${i}" title="Redraw again (AI)">✨+</button>` : ''}`
+      : `<button data-e="redraw" data-i="${i}" title="Redraw as a clean scan (AI)">✨</button>`;
+    return `<div class="thumb${busy ? ' busy' : ''}">
+      <div class="im"><img src="${photoUrl(b, p.n)}" alt="page ${i + 1}" loading="lazy"><span class="n">p.${i + 1}</span></div>
+      <div class="cap">${esc(cap)}</div>
+      <div class="tb">
+        <button data-e="l" data-i="${i}" title="Move earlier">◀</button><button data-e="r" data-i="${i}" title="Move later">▶</button>
+        <button data-e="rot" data-i="${i}" title="Turn the page">⟳</button>${redrawBtn}
+        <button data-e="replace" data-i="${i}" title="Replace with a new photo">↻</button>
+        <button data-e="words" data-i="${i}" title="Fix words on this page">✎</button>
+        <button data-e="del" data-i="${i}" title="Remove this page">✕</button>
+      </div></div>`;
+  }).join('');
+}
+// Run one change at a time; save the book after each, then tidy up photos that are no longer used
+async function editOp(i, text, fn) {
+  if (editing.busy) return;
+  const b = editing.book;
+  editing.busy = true; editing.status = { i, text }; renderEditPages();
+  try {
+    const unused = (await fn()) || [];
+    await saveBook(b);
+    if (unused.length) deletePhotos(b, unused);
+  } catch (e) { console.error(e); if (e.status !== 401) alertMsg(e.message); }
+  finally { editing.busy = false; editing.status = null; $('eProg').textContent = ''; renderEditPages(); }
+}
+let replaceAt = -1;
+$('eGrid').addEventListener('click', (e) => {
+  const btn = e.target.closest('button'); if (!btn || !editing || editing.busy) return;
+  const b = editing.book, i = +btn.dataset.i, page = b.pages[i];
+  switch (btn.dataset.e) {
+    case 'l': if (i > 0) editOp(-1, '', () => { [b.pages[i - 1], b.pages[i]] = [b.pages[i], b.pages[i - 1]]; }); break;
+    case 'r': if (i < b.pages.length - 1) editOp(-1, '', () => { [b.pages[i + 1], b.pages[i]] = [b.pages[i], b.pages[i + 1]]; }); break;
+    case 'rot': editOp(i, 'Turning…', () => rotatePage(b, page)); break;
+    case 'redraw': editOp(i, '✨ Redrawing… (about 20 s)', () => redrawPage(b, page)); break;
+    case 'orig': editOp(i, 'Switching…', () => useVersion(b, page, 'orig')); break;
+    case 'useredraw': editOp(i, 'Switching…', () => useVersion(b, page, 'redraw')); break;
+    case 'replace': replaceAt = i; $('eReplace').click(); break;
+    case 'words': saveBook(b).catch(() => {}); openReader(b, i); $('editArea').classList.remove('hidden'); renderEdit(); break;
+    case 'del':
+      if (b.pages.length === 1) { alertMsg('A book needs at least one page. To remove the whole book, use Delete in the library.'); break; }
+      ask('Remove this page?', `Page ${i + 1} will be removed from “${b.title}”.`, 'Remove').then((yes) => {
+        if (yes) editOp(-1, '', () => { const gone = b.pages.splice(i, 1)[0]; return Object.values(gone.versions).map((v) => v.n); });
+      });
+      break;
+  }
+});
+$('eReplace').addEventListener('change', (e) => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f || replaceAt < 0) return;
+  const b = editing.book, i = replaceAt; replaceAt = -1;
+  editOp(i, 'New photo: getting ready…', async () => {
+    const np = await pageFromFile(b, f, (t) => { editing.status = { i, text: 'New photo: ' + t }; renderEditPages(); });
+    const old = b.pages[i]; b.pages[i] = np;
+    return Object.values(old.versions).map((v) => v.n);
+  });
+});
+$('eAdd').addEventListener('change', (e) => {
+  const files = [...e.target.files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })); e.target.value = '';
+  if (!files.length) return;
+  const b = editing.book;
+  editOp(-1, '', async () => {
+    Scan.load().catch(() => {});
+    for (let k = 0; k < files.length; k++) {
+      const np = await pageFromFile(b, files[k], (t) => { $('eProg').textContent = `Adding page ${k + 1} of ${files.length}: ${t}`; });
+      b.pages.push(np); renderEditPages();
+      await saveBook(b);
+    }
+  });
+});
+let titleTimer = 0;
+$('eTitle').addEventListener('input', () => {
+  const b = editing.book, v = $('eTitle').value.trim();
+  clearTimeout(titleTimer); if (!v) return;
+  titleTimer = setTimeout(() => { b.title = v; saveBook(b).catch((err) => alertMsg(err.message)); }, 600);
+});
+$('eDone').onclick = async () => {
+  if (editing.busy) return;
+  const b = editing.book, v = $('eTitle').value.trim();
+  clearTimeout(titleTimer); if (v && v !== b.title) { b.title = v; }
+  try { await saveBook(b); } catch (e) { if (e.status !== 401) alertMsg(e.message); return; }
+  const from = editing.from; editing = null;
+  if (from === 'reader') openReader(b, Math.min(pg, b.pages.length - 1)); else goHome();
+  prepareVoice(b);
+};
+$('editPagesBtn').onclick = () => { if (book) openEditPages(book, 'reader'); };
+
 /* ================= start ================= */
 (async () => {
   try {
     const s = await api('/api/status');
     if (s.voiceId) VOICE_VERSION = s.voiceId;
+    canRedraw = !!s.redraw;
     if (!s.signedIn) return showLogin();
     goHome();
   } catch (e) { showLogin(); }

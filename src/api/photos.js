@@ -24,3 +24,9 @@ export async function onRequestPut({ params, request, env }) {
   await bucket(env).put(key, body, { httpMetadata: { contentType: type } });
   return json({ ok: true });
 }
+
+export async function onRequestDelete({ params, env }) {
+  const key = keyFor(params); if (!key) return error('Bad photo address.');
+  await bucket(env).delete(key);
+  return json({ ok: true });
+}

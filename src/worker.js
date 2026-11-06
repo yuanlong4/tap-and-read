@@ -10,6 +10,7 @@ import * as audio from './api/audio.js';
 import * as photos from './api/photos.js';
 import * as books from './api/books.js';
 import * as book from './api/book.js';
+import * as redraw from './api/redraw.js';
 
 // [pattern, module] — :name parts become params
 const ROUTES = [
@@ -17,6 +18,7 @@ const ROUTES = [
   ['/api/status', status],
   ['/api/read-page', readPage],
   ['/api/tts', tts],
+  ['/api/redraw', redraw],
   ['/api/audio/:key', audio],
   ['/api/photos/:book/:n', photos],
   ['/api/books', books],

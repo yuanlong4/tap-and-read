@@ -127,3 +127,7 @@
   .thumb .tb{display:flex;gap:4px;padding:4px 6px 8px;flex-wrap:wrap}
   .thumb .tb button{background:var(--paper);border:1px solid var(--line);border-radius:8px;min-width:28px;height:28px;font-size:13px;padding:0 6px}
   .thumb .tb button:hover{background:#eef4fd}
+
+  #eGrid .thumb .im img{aspect-ratio:3/4;object-fit:contain;background:#f3eddf}
+  #eGrid .thumb.busy .cap{color:var(--sky)}
+  #vEdit.locked .tb button,#vEdit.locked #eAddLbl{opacity:.45;pointer-events:none}

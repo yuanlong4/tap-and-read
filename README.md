@@ -6,6 +6,8 @@ A family website that turns photos of real picture books into books a child can 
 - Photos are **straightened and cropped automatically** (the table and background are cut away, slanted shots are squared up), and Claude turns sideways pages upright. The page then fills the screen in **Full page** view.
 - Tapping a word says it slowly in a warm, natural voice (OpenAI's steerable voice, told to sound like a kind teacher). **Read to me** reads the page and highlights each word as it is spoken.
 - **Fix words** lets a grown-up correct anything the reader got wrong.
+- **Edit pages** (from the reader or the library): reorder, remove, add, replace or turn pages, rename the book. Every page keeps its original photo.
+- **✨ Redraw** (optional, tap per page): OpenAI's image model (gpt-image-2, low quality, about half a cent a page) turns a page photo into a clean, flat "scan". The words always come from Claude reading the original photo; Claude also re-reads the redrawn page, and if any word differs the original is kept. Uses the same `OPENAI_API_KEY` as the voice. Quality can be changed with a `REDRAW_QUALITY` variable (`low`, `medium`, `high`).
 - Books, photos and voice live in your own Cloudflare storage, so every phone, tablet and computer in the family sees the same library. The voice is made **once** per word or page and reused forever.
 - The whole site sits behind a family password.
 
@@ -27,6 +29,7 @@ src/api/           server code that runs on Cloudflare
   login.js         family password → signed cookie
   read-page.js     sends a page photo to Claude, returns the lines of text
   tts.js           makes speech (OpenAI, or DeepInfra), stores the MP3 in R2 (reused forever)
+  redraw.js        ✨ redraws a page photo as a clean scan (OpenAI gpt-image-2)
   books.js, book.js, photos.js, audio.js   storage in R2
 wrangler.toml      Cloudflare settings (storage bucket, voice, Claude model)
 ```
